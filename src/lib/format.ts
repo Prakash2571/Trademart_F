@@ -86,6 +86,18 @@ export function humanise(value: string | null | undefined): string {
     .join(' ');
 }
 
+/**
+ * Strips the `.myshopify.com` suffix.
+ *
+ * The full domain is long, unbreakable and mostly boilerplate, which reads badly
+ * as a headline value. The subdomain is the part that actually identifies the
+ * store; the full domain is still shown in Settings and the System panel.
+ */
+export function storeSubdomain(domain: string | null | undefined): string {
+  if (!domain) return NOT_AVAILABLE;
+  return domain.trim().replace(/\.myshopify\.com\/?$/i, '');
+}
+
 /** Extracts the numeric part of a Shopify GID for display. */
 export function shortGid(gid: string | null | undefined): string {
   if (!gid) return NOT_AVAILABLE;

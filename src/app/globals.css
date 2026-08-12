@@ -278,6 +278,9 @@ h3 {
   border-radius: var(--radius);
   padding: 16px 18px;
   box-shadow: var(--shadow-sm);
+  /* Allows the grid track to shrink so long values wrap instead of
+     overflowing the card. */
+  min-width: 0;
 }
 
 .stat__label {
@@ -293,6 +296,18 @@ h3 {
   font-weight: 650;
   letter-spacing: -0.5px;
   margin-top: 7px;
+  min-width: 0;
+  /* Store domains and SKUs have no spaces to break on; without this they
+     overflow the card rather than wrapping. */
+  overflow-wrap: anywhere;
+}
+
+/* Long text values (store names, domains) - smaller and tighter so they read
+   as a label rather than a clipped headline. */
+.stat__value--compact {
+  font-size: 17px;
+  line-height: 1.35;
+  letter-spacing: -0.2px;
 }
 
 .stat__value--muted {
@@ -358,6 +373,8 @@ table.table {
 .mono {
   font-family: var(--font-mono);
   font-size: 12.5px;
+  /* Domains, GIDs and endpoints have no natural break points. */
+  overflow-wrap: anywhere;
 }
 
 .muted {
@@ -388,6 +405,10 @@ table.table {
   white-space: nowrap;
   background: var(--neutral-soft);
   color: var(--text-muted);
+  /* Keeps a long store name or status from pushing the top bar out of view. */
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .badge--success {

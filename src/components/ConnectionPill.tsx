@@ -9,6 +9,7 @@
  */
 
 import { useApi } from '@/hooks/useApi';
+import { storeSubdomain } from '@/lib/format';
 import type { ShopifyStatus } from '@/lib/types';
 import { Badge } from './ui';
 
@@ -49,9 +50,15 @@ export function ConnectionPill() {
     );
   }
 
+  // Show the identifying part of the domain; the full value is in the tooltip
+  // and on the Settings page.
+  const label = data.shop?.name ?? storeSubdomain(data.storeDomain);
+
   return (
-    <Badge tone="success" dot>
-      {data.shop?.myshopifyDomain ?? 'Shopify connected'}
-    </Badge>
+    <span title={data.shop?.myshopifyDomain ?? data.storeDomain}>
+      <Badge tone="success" dot>
+        {label}
+      </Badge>
+    </span>
   );
 }

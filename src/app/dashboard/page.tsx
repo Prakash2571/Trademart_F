@@ -12,11 +12,16 @@ import Link from 'next/link';
 
 import { useApi } from '@/hooks/useApi';
 import { Card, Callout, ErrorState, PageHeader, SkeletonStats, StatCard } from '@/components/ui';
-import { formatAmount, formatDateTime, formatNumber } from '@/lib/format';
+import { formatAmount, formatDateTime, formatNumber, storeSubdomain } from '@/lib/format';
 import type { DashboardSummary } from '@/lib/types';
 
 export default function DashboardPage() {
   const { data, loading, error, refetch } = useApi<DashboardSummary>('/dashboard/summary');
+
+  // Prefer the real shop name; before Shopify connects only the domain is known,
+  // so show its identifying part rather than the full boilerplate hostname.
+  const shop = data?.shopify.shop ?? null;
+  const storeLabel = shop?.name ?? storeSubdomain(data?.shopify.storeDomain);
 
   return (
     <>
@@ -58,13 +63,15 @@ export default function DashboardPage() {
           <div className="grid grid--stats">
             <StatCard
               label="Store"
-              value={data.shopify.shop?.name ?? data.shopify.storeDomain}
+              value={storeLabel}
+              valueTitle={data.shopify.storeDomain}
+              compact={storeLabel.length > 14}
               hint={
-                data.shopify.shop
-                  ? `${data.shopify.shop.planDisplayName ?? 'Plan unknown'}${
-                      data.shopify.shop.isDevelopmentStore ? ' · development store' : ''
+                shop
+                  ? `${shop.planDisplayName ?? 'Plan unknown'}${
+                      shop.isDevelopmentStore ? ' · development store' : ''
                     }`
-                  : `API ${data.shopify.apiVersion}`
+                  : `Not connected · API ${data.shopify.apiVersion}`
               }
             />
             <StatCard

@@ -72,17 +72,33 @@ export function StatCard({
   value,
   hint,
   unavailable,
+  compact,
+  valueTitle,
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
   /** Renders the muted "unavailable" treatment instead of a fake number. */
   unavailable?: boolean;
+  /** Smaller type for long text values so they fit without wrapping oddly. */
+  compact?: boolean;
+  /** Tooltip for when the displayed value is an abbreviation of a longer one. */
+  valueTitle?: string;
 }) {
+  const modifiers = [
+    unavailable ? 'stat__value--muted' : '',
+    compact ? 'stat__value--compact' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <div className="stat">
       <div className="stat__label">{label}</div>
-      <div className={`stat__value${unavailable ? ' stat__value--muted' : ''}`}>
+      <div
+        className={`stat__value${modifiers ? ` ${modifiers}` : ''}`}
+        title={valueTitle}
+      >
         {unavailable ? NOT_AVAILABLE : value}
       </div>
       {hint && <div className="stat__hint">{hint}</div>}
