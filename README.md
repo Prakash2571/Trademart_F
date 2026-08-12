@@ -82,7 +82,7 @@ Every page reads from the backend, so start it first:
 ```bash
 cd ../trademart-backend
 npm install
-cp .env.example .env     # add SHOPIFY_ACCESS_TOKEN
+cp .env.example .env     # add SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET
 npm run dev              # http://localhost:4000
 ```
 
@@ -95,9 +95,15 @@ Two things must line up:
 If the backend is not running, pages show a **`BACKEND_UNREACHABLE`** state with
 the URL that was attempted rather than an empty screen.
 
-The pricing page works with no Shopify token at all. Product, order, customer and
-inventory pages need `SHOPIFY_ACCESS_TOKEN` set in the backend; without it they
-show a clear `SHOPIFY_NOT_CONFIGURED` message instead of failing silently.
+The pricing page works with no Shopify credentials at all. Product, order,
+customer and inventory pages need `SHOPIFY_CLIENT_ID` and `SHOPIFY_CLIENT_SECRET`
+set in the backend, which then obtains and refreshes the access token
+automatically; without them the pages show a clear `SHOPIFY_NOT_CONFIGURED`
+message instead of failing silently.
+
+The **Settings** page shows the live auth strategy, when the cached token
+expires, and the scopes Shopify actually granted — the token value itself is
+never sent to the browser.
 
 ---
 

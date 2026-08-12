@@ -37,14 +37,34 @@ export interface ShopDto {
   apiVersion: string;
 }
 
+export type ShopifyAuthStrategy = 'CLIENT_CREDENTIALS' | 'STATIC_TOKEN' | 'NONE';
+
+/**
+ * Non-secret token status. The backend never sends the token value itself, so
+ * there is deliberately no field for it here.
+ */
+export interface TokenDiagnostics {
+  strategy: ShopifyAuthStrategy;
+  cached: boolean;
+  expiresAt: string | null;
+  expiresInSeconds: number | null;
+  scopes: string[];
+  fetchCount: number;
+  lastFetchedAt: string | null;
+  lastError: string | null;
+}
+
 export interface ShopifyStatus {
   configured: boolean;
   storeDomain: string;
   apiVersion: string;
   graphqlEndpoint: string;
-  hasAccessToken: boolean;
+  tokenEndpoint: string;
+  authStrategy: ShopifyAuthStrategy;
+  hasClientCredentials: boolean;
+  hasStaticTokenOverride: boolean;
   hasWebhookSecret: boolean;
-  hasOauthCredentials: boolean;
+  token: TokenDiagnostics | null;
   connected: boolean;
   shop: ShopDto | null;
   error: { code: string; message: string } | null;
@@ -255,6 +275,11 @@ export interface HealthResponse {
   uptimeSeconds: number;
   checks: {
     database: { configured: boolean; status: string; error: string | null };
-    shopify: { configured: boolean; storeDomain: string; apiVersion: string };
+    shopify: {
+      configured: boolean;
+      authStrategy: ShopifyAuthStrategy;
+      storeDomain: string;
+      apiVersion: string;
+    };
   };
 }

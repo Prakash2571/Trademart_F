@@ -47,9 +47,10 @@ export default function DashboardPage() {
         <div className="stack">
           {!data.shopify.configured && (
             <Callout tone="warning" title="Shopify is not connected">
-              Set <code>SHOPIFY_ACCESS_TOKEN</code> in the backend <code>.env</code> file and
-              restart the backend. Until then, product, order, customer and inventory data
-              cannot be read.
+              Set <code>SHOPIFY_CLIENT_ID</code> and <code>SHOPIFY_CLIENT_SECRET</code> in the
+              backend <code>.env</code> file and restart the backend. The access token is then
+              obtained and refreshed automatically. Until then, product, order, customer and
+              inventory data cannot be read.
             </Callout>
           )}
 

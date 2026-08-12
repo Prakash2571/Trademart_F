@@ -298,6 +298,10 @@ function errorHeadline(error: ApiError): string {
       return 'Cannot reach the Trademart backend';
     case 'SHOPIFY_NOT_CONFIGURED':
       return 'Shopify is not configured';
+    case 'SHOPIFY_AUTH_FAILED':
+      return 'Could not obtain a Shopify access token';
+    case 'SHOPIFY_APP_NOT_INSTALLED':
+      return 'The app is not installed on this store';
     case 'SHOPIFY_UNAUTHORIZED':
       return 'Shopify rejected the access token';
     case 'SHOPIFY_SCOPE_MISSING':
@@ -316,7 +320,11 @@ function remedy(error: ApiError): string | null {
     case 'BACKEND_UNREACHABLE':
       return 'Start the backend with `npm run dev` and confirm NEXT_PUBLIC_API_BASE_URL points at it.';
     case 'SHOPIFY_NOT_CONFIGURED':
-      return 'Add SHOPIFY_ACCESS_TOKEN to the backend .env file and restart the backend.';
+      return 'Add SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET to the backend .env file and restart the backend.';
+    case 'SHOPIFY_AUTH_FAILED':
+      return 'Check that SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET match the app in the Shopify Dev Dashboard.';
+    case 'SHOPIFY_APP_NOT_INSTALLED':
+      return 'Install or update the Trademart app on this store, then retry. The client credentials grant only works on stores where the app is installed.';
     case 'SHOPIFY_SCOPE_MISSING':
       return 'Add the scope in the Shopify Dev Dashboard, release a new app version, then update the install on the store.';
     case 'SHOPIFY_THROTTLED':
