@@ -283,3 +283,27 @@ export interface HealthResponse {
     };
   };
 }
+
+
+/** Response from GET /api/operator/me - the frontend's auth-state source. */
+export interface OperatorMe {
+  authenticated: boolean;
+  username: string | null;
+  method: 'SESSION' | 'API_KEY' | null;
+  /** False means nobody can sign in until the server is configured. */
+  loginConfigured: boolean;
+  operatorConfigured: boolean;
+  /** When true, read endpoints need a session too, not just writes. */
+  readsProtected: boolean;
+  csrfHeader: string;
+  csrfCookie: string;
+}
+
+/** Response from POST /api/operator/login. */
+export interface OperatorLogin {
+  username: string;
+  method: 'SESSION';
+  expiresInSeconds: number;
+  csrfHeader: string;
+  csrfCookie: string;
+}

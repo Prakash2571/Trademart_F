@@ -118,8 +118,31 @@ never sent to the browser.
 | `/analytics` | Revenue, AOV, status breakdowns, revenue-by-day, top products, plus explicit unavailability for margin and traffic |
 | `/pricing` | Margin calculator and suggested-price calculator |
 | `/settings` | Shopify connection, store domain, API version, backend health |
+| `/login` | Operator sign-in |
 
 `/` redirects to `/dashboard`.
+
+---
+
+## Operator authentication
+
+Endpoints that change the store require a signed-in operator on the backend. The
+frontend handles this with:
+
+- **`OperatorProvider`** (`src/lib/operator.tsx`) — loads `GET /api/operator/me`
+  once and shares auth state via `useOperator()`.
+- **`/login`** — posts credentials to the backend, which sets an **HttpOnly**
+  session cookie. No token is ever stored in JavaScript.
+- **Topbar control** (`OperatorMenu`) — shows the signed-in operator and a sign
+  out button, or a "Sign in" link.
+- **`AuthGate`** — blocks the console only when the backend has
+  `OPERATOR_PROTECT_READS=true` and nobody is signed in; otherwise reads render
+  as before and individual writes prompt for sign-in on `UNAUTHORIZED`.
+
+The API client (`src/lib/api.ts`) sends every request with
+`credentials:'include'` and echoes the CSRF cookie in `X-CSRF-Token` on
+mutations. There is **no auth-related frontend env var** — the cookie is managed
+by the browser. See the backend's `docs/OPERATOR_AUTH.md`.
 
 ---
 

@@ -310,6 +310,12 @@ function errorHeadline(error: ApiError): string {
       return 'Shopify rate limit reached';
     case 'RATE_LIMITED':
       return 'Too many requests';
+    case 'UNAUTHORIZED':
+      return 'Sign in required';
+    case 'CSRF_INVALID':
+      return 'Session check failed';
+    case 'OPERATOR_NOT_CONFIGURED':
+      return 'Operator login is not configured';
     default:
       return 'Something went wrong';
   }
@@ -329,6 +335,12 @@ function remedy(error: ApiError): string | null {
       return 'Add the scope in the Shopify Dev Dashboard, release a new app version, then update the install on the store.';
     case 'SHOPIFY_THROTTLED':
       return 'Wait a few seconds and retry - the backend already retries with backoff.';
+    case 'UNAUTHORIZED':
+      return 'Sign in as an operator, then retry.';
+    case 'CSRF_INVALID':
+      return 'Your session token is missing or stale. Sign in again.';
+    case 'OPERATOR_NOT_CONFIGURED':
+      return 'Set OPERATOR_PASSWORD_HASH and SESSION_SECRET on the backend (npm run operator:hash), then restart it.';
     default:
       return null;
   }
