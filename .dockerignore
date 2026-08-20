@@ -1,0 +1,22 @@
+.git
+.gitignore
+.github
+
+node_modules
+.next
+out
+build
+dist
+
+# Secrets: never copy these in. NEXT_PUBLIC_API_BASE_URL comes in as a build arg.
+.env
+.env.*
+
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.tsbuildinfo
+next-env.d.ts
