@@ -629,3 +629,26 @@ export interface InventorySetResult {
   /** Present when Shopify reported the resulting on-hand value. */
   applied?: boolean;
 }
+
+/* ------------------------------------------------------ product creation --- */
+
+/** A created variant, enough to map a form row to the real Shopify variant. */
+export interface CreatedVariant {
+  shopifyVariantId: string;
+  sku: string | null;
+  optionValues: { name: string; value: string }[];
+}
+
+/**
+ * POST /api/shopify/products response. Deliberately NOT a full ProductDto - it
+ * is the create result plus enough variant identity (id + sku + optionValues)
+ * to persist per-variant manual costs without assuming variant order.
+ */
+export interface ProductCreateResult {
+  shopifyProductId: string;
+  title: string;
+  status: string;
+  variantsCreated: number;
+  mediaAttached: number;
+  variants: CreatedVariant[];
+}

@@ -18,7 +18,7 @@ import { useRouter } from 'next/navigation';
 
 import { Badge, Callout, Card, PageHeader } from '@/components/ui';
 import { ApiError, apiPost, apiPut } from '@/lib/api';
-import type { ProductDto } from '@/lib/types';
+import type { CreatedVariant, ProductCreateResult } from '@/lib/types';
 
 interface OptionDraft {
   name: string;
@@ -87,7 +87,7 @@ function NewProductWizard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [costWarning, setCostWarning] = useState<string | null>(null);
-  const [created, setCreated] = useState<ProductDto | null>(null);
+  const [created, setCreated] = useState<ProductCreateResult | null>(null);
 
   const parsedOptions = useMemo(
     () =>
@@ -157,26 +157,33 @@ function NewProductWizard() {
     setError(null);
     setCostWarning(null);
     try {
-      const response = await apiPost<ProductDto>('/shopify/products', requestBody);
+      const response = await apiPost<ProductCreateResult>('/shopify/products', requestBody);
       const product = response.data;
       setCreated(product);
 
-      // Manual costs are a separate concern (/api/costs), so they are recorded
-      // after creation. A failure here must NOT read as "product creation
-      // failed" - the product exists either way.
+      // Manual costs are a separate concern (/api/costs), recorded AFTER
+      // creation. A failure here must never read as "product creation failed" -
+      // the product exists either way. Each cost is mapped to the REAL Shopify
+      // variant id by SKU (then option values), never by assuming the created
+      // order matches the form order.
       const withCost = variants.filter(
         (variant) => variant.price.trim().length > 0 && variant.manualCost.trim().length > 0,
       );
       if (withCost.length > 0) {
         const failures: string[] = [];
-        for (let index = 0; index < withCost.length; index += 1) {
-          const draft = withCost[index] as VariantDraft;
+        for (let i = 0; i < withCost.length; i += 1) {
+          const draft = withCost[i] as VariantDraft;
+          const label = draft.sku.trim().length > 0 ? `SKU ${draft.sku.trim()}` : `variant ${i + 1}`;
           const amount = Number(draft.manualCost);
           if (!Number.isFinite(amount) || amount <= 0) {
-            failures.push(`variant ${index + 1}: cost must be greater than zero`);
+            failures.push(`${label}: cost must be greater than zero`);
             continue;
           }
-          const variantId = product.variants[index]?.shopifyVariantId ?? null;
+          const variantId = matchCreatedVariant(draft, product.variants, parsedOptions);
+          if (variantId === null) {
+            failures.push(`${label}: could not match it to a created variant`);
+            continue;
+          }
           try {
             await apiPut<unknown>('/costs', {
               productId: product.shopifyProductId,
@@ -187,14 +194,12 @@ function NewProductWizard() {
               note: 'Entered when the product was created.',
             });
           } catch (caught) {
-            failures.push(
-              `variant ${index + 1}: ${caught instanceof ApiError ? caught.message : 'failed'}`,
-            );
+            failures.push(`${label}: ${caught instanceof ApiError ? caught.message : 'failed'}`);
           }
         }
         if (failures.length > 0) {
           setCostWarning(
-            `The product was created, but some manual costs were not saved: ${failures.join('; ')}. Set them from the product page.`,
+            `Product created successfully. Manual supplier costs failed to save for ${failures.length} variant(s): ${failures.join('; ')}. Set them from the product page.`,
           );
         }
       }
@@ -640,6 +645,52 @@ function NewProductWizard() {
       </Card>
     </div>
   );
+}
+
+/**
+ * Maps a form variant to the real Shopify variant id, deterministically.
+ *
+ * Never assumes the created order matches the form order (Shopify does not
+ * guarantee it). SKU is the strongest key; option values are the fallback; a
+ * single-variant product with no options resolves to the one created variant.
+ * Returns null when no confident match exists, so the caller reports a partial
+ * failure instead of writing a cost against the wrong variant.
+ */
+function matchCreatedVariant(
+  draft: VariantDraft,
+  created: CreatedVariant[],
+  options: { name: string; values: string[] }[],
+): string | null {
+  const sku = draft.sku.trim();
+  if (sku.length > 0) {
+    const bySku = created.find((variant) => (variant.sku ?? '') === sku);
+    if (bySku !== undefined) return bySku.shopifyVariantId;
+  }
+
+  if (options.length > 0) {
+    const expected = options
+      .map((option, index) => ({ name: option.name, value: (draft.optionValues[index] ?? '').trim() }))
+      .filter((pair) => pair.value.length > 0);
+    if (expected.length > 0) {
+      const byOptions = created.find((variant) =>
+        expected.every((pair) =>
+          variant.optionValues.some(
+            (selected) =>
+              selected.name === pair.name &&
+              selected.value.toLowerCase() === pair.value.toLowerCase(),
+          ),
+        ),
+      );
+      if (byOptions !== undefined) return byOptions.shopifyVariantId;
+    }
+  }
+
+  // Single-variant product with no options: exactly one created variant.
+  if (options.length === 0 && created.length === 1) {
+    return created[0]?.shopifyVariantId ?? null;
+  }
+
+  return null;
 }
 
 /** Projected margin for the cost step, computed only from real numbers. */
