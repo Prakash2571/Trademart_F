@@ -1,0 +1,101 @@
+name: CI
+
+# Runs on every push and PR.
+#
+# The build step matters more here than it looks: earlier frontend work was
+# committed without ever running `next build`, so type errors and bad imports
+# reached the repository unnoticed. This job is what stops that recurring.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: typecheck, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` is the goal but REQUIRES a committed lockfile. None exists yet
+      # (it could not be generated where this was authored - the npm registry
+      # was unreachable), so this falls back to `npm install` and warns rather
+      # than failing every PR before anything is checked.
+      #
+      # To enable npm ci, with no edit needed here:
+      #   npm install --package-lock-only && git add package-lock.json
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "Lockfile found - using npm ci (reproducible)."
+            npm ci
+          else
+            echo "::warning title=No lockfile::package-lock.json is missing, so this build is NOT reproducible. Run 'npm install --package-lock-only' and commit the result to enable npm ci."
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # NEXT_PUBLIC_* values are inlined at build time. `/api` is the production
+      # value (same-origin through nginx) and is what should be compile-checked.
+      - name: Build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: /api
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run build
+
+      # output: 'standalone' is what the Docker runtime stage copies. If a
+      # config change silently drops it, the image builds and then fails to
+      # start, which is a far more expensive way to find out.
+      - name: Assert standalone output was produced
+        run: |
+          test -f .next/standalone/server.js \
+            || { echo "::error title=No standalone output::.next/standalone/server.js is missing. next.config.mjs must set output: 'standalone' for the Docker image to work."; exit 1; }
+          echo "standalone output present"
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: false
+          load: false
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=/api
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+# ---------------------------------------------------------------------------
+# Branch protection (manual step)
+#
+# Settings -> Branches -> add a rule for `main`:
+#   - Require a pull request before merging
+#   - Require status checks to pass:
+#       "typecheck, build"
+#       "docker image"
+#   - Require branches to be up to date before merging
+# ---------------------------------------------------------------------------

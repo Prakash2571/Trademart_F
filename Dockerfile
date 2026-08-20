@@ -11,15 +11,26 @@
 # env var. It must be a URL the visitor's browser can resolve - the default `/api`
 # is same-origin through nginx, which also sidesteps the backend's CORS allowlist.
 #
-# NOTE: no package-lock.json is committed in this repo, so `npm install` is used
-# instead of `npm ci`. Commit a lockfile and switch to `npm ci` when you want
-# byte-reproducible builds.
+# DEPENDENCY INSTALL: `npm ci` when a lockfile is committed, `npm install`
+# otherwise. npm ci is strictly better - it installs exactly what the lockfile
+# pins and fails if package.json disagrees - but it REQUIRES the lockfile, so an
+# unconditional `npm ci` would make the image unbuildable until one is added.
+#
+# The wildcard in the COPY is what makes this work: `package-lock.json*` matches
+# zero files without erroring. Commit a lockfile and this switches to npm ci on
+# the next build with no edit here.
+#   npm install --package-lock-only && git add package-lock.json
 
 # ---------------------------------------------------------------- deps --------
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then \
+      echo "Lockfile present - npm ci"; npm ci --no-audit --no-fund; \
+    else \
+      echo "WARNING: no package-lock.json - falling back to npm install; this build is not reproducible"; \
+      npm install --no-audit --no-fund; \
+    fi
 
 # --------------------------------------------------------------- build --------
 FROM node:22-alpine AS build
