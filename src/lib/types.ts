@@ -307,3 +307,143 @@ export interface OperatorLogin {
   csrfHeader: string;
   csrfCookie: string;
 }
+
+
+/* ----------------------------------------------------------- automation -- */
+
+export type PricingMode = 'margin' | 'multiplier' | 'fixed_uplift';
+export type SelectionMode = 'all' | 'tagged' | 'vendor';
+export type NewProductPolicy = 'leave' | 'draft' | 'activate';
+export type PriceRounding = 'none' | 'charm99' | 'integer';
+
+export interface AutomationPriceRules {
+  enabled: boolean;
+  pricingMode: PricingMode;
+  multiplier: number;
+  fixedUplift: number;
+  targetMarginPercentage: number;
+  minMarginPercentage: number;
+  paymentFeePercentage: number;
+  shopifyFeePercentage: number;
+  advertisingCost: number;
+  otherCosts: number;
+  rounding: PriceRounding;
+  maxIncreasePercentage: number;
+  maxDecreasePercentage: number;
+  minChangeAmount: number;
+  requireKnownCost: boolean;
+}
+
+export interface AutomationVisibilityRules {
+  enabled: boolean;
+  hideOutOfStock: boolean;
+  restoreWhenBackInStock: boolean;
+  hideBelowMinMargin: boolean;
+  hideUnknownCost: boolean;
+}
+
+export interface AutomationSelectionRules {
+  mode: SelectionMode;
+  includeTags: string[];
+  includeVendors: string[];
+  newProductPolicy: NewProductPolicy;
+}
+
+export interface AutomationRules {
+  visibility: AutomationVisibilityRules;
+  price: AutomationPriceRules;
+  selection: AutomationSelectionRules;
+  exemptTags: string[];
+  maxItemsPerRun: number;
+}
+
+export interface AutomationStatus {
+  writesEnabled: boolean;
+  storeDomain: string;
+  effectiveRules: AutomationRules;
+  ruleProblems: string[];
+  costSource: { field: string; description: string; requiresScope: string };
+  writeScopeRequired: string;
+  webhookTriggersEnabled: boolean;
+  note: string;
+}
+
+export interface AutomationRulesResponse {
+  stored: Partial<AutomationRules> | null;
+  effective: AutomationRules;
+  problems: string[];
+  source: 'defaults' | 'stored';
+}
+
+/** One planned/applied action from a preview or run. */
+export interface AutomationAction {
+  type: 'visibility' | 'price';
+  shopifyProductId: string;
+  shopifyVariantId?: string | null;
+  title: string;
+  variantTitle?: string;
+  from: string | number;
+  to: string | number;
+  currencyCode?: string;
+  currentMarginPercentage?: number | null;
+  projectedMarginPercentage?: number | null;
+  costSource?: string;
+  clamped?: boolean;
+  reasons: string[];
+}
+
+export interface AutomationSkipped {
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  title: string;
+  reasons: string[];
+}
+
+export interface AutomationSummary {
+  productsConsidered: number;
+  visibilityChanges: number;
+  priceChanges: number;
+  priceIncreases: number;
+  priceDecreases: number;
+  clamped: number;
+  skipped: number;
+  truncated: boolean;
+  applied?: number;
+  failed?: number;
+}
+
+export interface AutomationReport {
+  dryRun: boolean;
+  shopDomain: string;
+  rules: AutomationRules;
+  plan: {
+    actions: AutomationAction[];
+    skipped: AutomationSkipped[];
+    summary: AutomationSummary;
+  };
+  actions: {
+    type: 'visibility' | 'price';
+    shopifyProductId: string;
+    shopifyVariantId: string | null;
+    title: string;
+    fromValue: string;
+    toValue: string;
+    currencyCode: string | null;
+    reasons: string[];
+    status: 'planned' | 'applied' | 'failed';
+    error: string | null;
+  }[];
+  degraded: string[];
+  summary: AutomationSummary;
+  auditRunId: string | null;
+  notes: string[];
+}
+
+export interface AutomationRun {
+  _id?: string;
+  startedAt: string;
+  finishedAt: string | null;
+  dryRun: boolean;
+  trigger: string;
+  summary: AutomationSummary | null;
+}

@@ -23,6 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/customers', label: 'Customers', icon: '☺' },
   { href: '/analytics', label: 'Analytics', icon: '◔' },
   { href: '/pricing', label: 'Pricing', icon: '%' },
+  { href: '/automation', label: 'Automation', icon: '⚡' },
   { href: '/settings', label: 'Settings', icon: '⚙' },
 ];
 

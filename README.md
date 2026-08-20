@@ -117,6 +117,7 @@ never sent to the browser.
 | `/customers` | Read-only list — orders count, total spent, location, state |
 | `/analytics` | Revenue, AOV, status breakdowns, revenue-by-day, top products, plus explicit unavailability for margin and traffic |
 | `/pricing` | Margin calculator and suggested-price calculator |
+| `/automation` | Automation control center: status, rule editor, preview, apply, run history |
 | `/settings` | Shopify connection, store domain, API version, backend health |
 | `/login` | Operator sign-in |
 
