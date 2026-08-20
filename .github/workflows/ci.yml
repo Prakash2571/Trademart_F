@@ -25,27 +25,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # setup-node's `cache: npm` hashes a lockfile to build the cache key and
+      # FAILS the whole job if none exists. A lockfile could not be generated
+      # where this repo was authored (the npm registry was unreachable), so if
+      # one is not committed we generate it here FIRST, using the runner's
+      # preinstalled node, which does have registry access. This runs before
+      # setup-node so the cache step finds the file, and lets the job use
+      # `npm ci` either way.
+      #
+      # Commit package-lock.json (npm install --package-lock-only) to make the
+      # install fully reproducible; this step then no-ops.
+      - name: Ensure a lockfile exists
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "Committed lockfile present."
+          else
+            echo "::warning title=No committed lockfile::Generating package-lock.json for this run only. Commit it (npm install --package-lock-only) for reproducible installs."
+            npm install --package-lock-only --no-audit --no-fund
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      # `npm ci` is the goal but REQUIRES a committed lockfile. None exists yet
-      # (it could not be generated where this was authored - the npm registry
-      # was unreachable), so this falls back to `npm install` and warns rather
-      # than failing every PR before anything is checked.
-      #
-      # To enable npm ci, with no edit needed here:
-      #   npm install --package-lock-only && git add package-lock.json
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "Lockfile found - using npm ci (reproducible)."
-            npm ci
-          else
-            echo "::warning title=No lockfile::package-lock.json is missing, so this build is NOT reproducible. Run 'npm install --package-lock-only' and commit the result to enable npm ci."
-            npm install --no-audit --no-fund
-          fi
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
