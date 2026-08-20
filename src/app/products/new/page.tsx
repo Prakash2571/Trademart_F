@@ -110,8 +110,11 @@ function NewProductWizard() {
       ...(descriptionHtml.trim().length > 0 ? { descriptionHtml } : {}),
       ...(vendor.trim().length > 0 ? { vendor: vendor.trim() } : {}),
       ...(productType.trim().length > 0 ? { productType: productType.trim() } : {}),
-      // DRAFT unless explicitly published.
-      status: publish ? 'ACTIVE' : 'DRAFT',
+      // Always created DRAFT. `publish` asks the backend to publish + verify +
+      // activate; it never creates ACTIVE directly (ACTIVE without a channel
+      // publication is invisible-but-looks-live).
+      status: 'DRAFT',
+      publish,
       tags: tags
         .split(',')
         .map((tag) => tag.trim())
@@ -214,11 +217,24 @@ function NewProductWizard() {
     return (
       <Card title="Product created">
         <div className="stack">
-          <Callout tone="info" title={`Created as ${created.status}`}>
-            <strong>{created.title}</strong> now exists in Shopify.
-            {created.status !== 'ACTIVE' &&
-              ' It is not visible to customers until you publish it.'}
-          </Callout>
+          {created.published ? (
+            <Callout tone="info" title="Created and published">
+              <strong>{created.title}</strong> is ACTIVE and published to the Online Store, so
+              customers can see it.
+            </Callout>
+          ) : created.publishError !== null ? (
+            // Publish was requested but failed: the backend left it DRAFT. Do
+            // NOT say customers can see it.
+            <Callout tone="warning" title="Created as DRAFT — publication failed">
+              <strong>{created.title}</strong> exists but was left as DRAFT and is NOT visible to
+              customers: {created.publishError} Open the product to retry publishing.
+            </Callout>
+          ) : (
+            <Callout tone="info" title="Created as DRAFT">
+              <strong>{created.title}</strong> now exists in Shopify as a DRAFT. It is not visible
+              to customers until you publish it from the product page.
+            </Callout>
+          )}
           {costWarning !== null && (
             <Callout tone="warning" title="Manual costs incomplete">
               {costWarning}
@@ -584,7 +600,9 @@ function NewProductWizard() {
           <div className="stack">
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
               <Badge tone={publish ? 'warning' : 'info'} dot>
-                {publish ? 'will be ACTIVE (visible)' : 'will be DRAFT (hidden)'}
+                {publish
+                  ? 'created DRAFT, then published + activated'
+                  : 'will be DRAFT (hidden)'}
               </Badge>
               <Badge tone="neutral">{pricedVariants} priced variant(s)</Badge>
               <Badge tone="neutral">{parsedOptions.length} option(s)</Badge>
@@ -611,7 +629,7 @@ function NewProductWizard() {
                 />
                 <span className="muted">
                   {publish
-                    ? 'ACTIVE — customers can see it as soon as it is created'
+                    ? 'Publish to the Online Store and activate. If publication fails the product is left DRAFT (never ACTIVE-but-invisible).'
                     : 'DRAFT — recommended, review it first'}
                 </span>
               </label>

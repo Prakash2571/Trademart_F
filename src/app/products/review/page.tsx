@@ -187,11 +187,12 @@ function ReviewItem({
         productId: product.shopifyProductId,
       });
       if (!result.data.published) {
-        // Do NOT claim full success: the product is ACTIVE but not visible.
+        // Publication failed, so the backend kept the product DRAFT and in the
+        // review queue. Do NOT imply it was activated or is visible.
         setPartial(
-          `Activated, but publication failed${
+          `Not published${
             result.data.publishError !== null ? `: ${result.data.publishError}` : ''
-          }. The product is ACTIVE but not visible on the Online Store. Retry, or check the write_publications scope.`,
+          }. The product was left as DRAFT and stays in this review queue, so nothing is visible to customers. Retry, or check the write_publications scope.`,
         );
       }
       onChanged();
@@ -292,7 +293,7 @@ function ReviewItem({
           </Callout>
         )}
         {partial !== null && (
-          <Callout tone="warning" title="Activated, but publication failed">
+          <Callout tone="warning" title="Kept in review — publication failed">
             {partial}
           </Callout>
         )}

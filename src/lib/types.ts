@@ -661,8 +661,14 @@ export interface ApproveResult {
 export interface ProductCreateResult {
   shopifyProductId: string;
   title: string;
+  /** Final status: DRAFT unless publish was requested AND verified. */
   status: string;
   variantsCreated: number;
   mediaAttached: number;
+  /** True only when publication was requested and verified. */
+  published: boolean;
+  /** Set when publish was requested but failed; product left DRAFT. */
+  publishError: string | null;
+  publications: { publicationId: string; name: string; isPublished: boolean }[];
   variants: CreatedVariant[];
 }
