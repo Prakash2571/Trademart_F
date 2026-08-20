@@ -60,6 +60,9 @@ export function ManualCostEditor({
   const [amount, setAmount] = useState<string>(
     existing !== null ? String(existing.amount) : '',
   );
+  const [shippingCost, setShippingCost] = useState<string>(
+    existing?.shippingCost != null ? String(existing.shippingCost) : '',
+  );
   const [currencyCode, setCurrencyCode] = useState<string>(
     existing?.currencyCode ?? defaultCurrency,
   );
@@ -78,10 +81,16 @@ export function ManualCostEditor({
     setBusy('save');
     setError(null);
     try {
+      const shippingParsed = Number(shippingCost);
+      const shippingValid =
+        shippingCost.trim().length > 0 && Number.isFinite(shippingParsed) && shippingParsed > 0;
       await apiPut<ManualCostRecord>('/costs', {
         productId,
         variantId,
         amount: parsed,
+        // Omitted when blank — never sent as 0, which would read as "free
+        // shipping" rather than "unknown".
+        ...(shippingValid ? { shippingCost: shippingParsed } : {}),
         currencyCode: currencyCode.toUpperCase(),
         override,
         note: note.trim().length > 0 ? note.trim() : null,
@@ -153,6 +162,20 @@ export function ManualCostEditor({
             />
             <div className="field__hint">
               Must be greater than zero. A missing cost stays UNKNOWN rather than becoming 0.
+            </div>
+          </div>
+          <div className="field">
+            <label className="field__label">Shipping cost (optional)</label>
+            <input
+              className="input"
+              type="number"
+              step="0.01"
+              min="0"
+              value={shippingCost}
+              onChange={(event) => setShippingCost(event.target.value)}
+            />
+            <div className="field__hint">
+              Supplier shipping per unit, if known. Left blank it stays UNKNOWN — not 0.
             </div>
           </div>
           <div className="field">

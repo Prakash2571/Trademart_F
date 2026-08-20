@@ -597,7 +597,10 @@ export interface SupplierProviderDto {
 export interface ManualCostRecord {
   shopifyProductId: string;
   shopifyVariantId: string | null;
+  provider: string;
   amount: number;
+  /** Supplier shipping cost, or null when not entered. */
+  shippingCost: number | null;
   currencyCode: string;
   costSource: string;
   /** True when this value beats Shopify's cost per item. */

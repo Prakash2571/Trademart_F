@@ -47,7 +47,11 @@ export default function ProductReviewPage() {
 function ReviewConsole() {
   // Shopify search syntax. The tag contains a colon, so it must be quoted.
   const listPath = `/shopify/products?limit=50&query=${encodeURIComponent(`tag:'${REVIEW_TAG}'`)}`;
-  const products = useApi<{ products: ProductDto[] }>(listPath);
+  // GET /api/shopify/products sends the ProductDto[] directly as `data` (the
+  // regular Products page relies on this); pagination lives in `meta`. The old
+  // useApi<{ products }> here read `.products` off an array and always rendered
+  // an empty queue.
+  const products = useApi<ProductDto[]>(listPath);
   const status = useApi<AutomationStatus>('/automation/status');
   const costs = useApi<{ costs: ManualCostRecord[] }>('/costs');
 
@@ -78,7 +82,7 @@ function ReviewConsole() {
     );
   }
 
-  const list = products.data?.products ?? [];
+  const list = products.data ?? [];
 
   return (
     <div className="stack">
