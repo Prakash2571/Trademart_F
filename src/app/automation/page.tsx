@@ -7,9 +7,16 @@
  * would change (writes nothing), apply with an explicit confirmation, and review
  * run history.
  *
- * Flow is deliberate: edit -> Save -> Preview -> Apply. Preview and Apply both
- * operate on the SAVED rules, so you never "preview X but apply Y". Webhook-
- * triggered runs use the same saved rules.
+ * Flow is deliberate and ENFORCED: edit -> Save -> Preview -> Apply.
+ *
+ * Apply is disabled until a preview has SUCCEEDED against the currently saved
+ * rules and the currently connected store. Saving rules, a failed preview, or a
+ * completed apply all close the gate again. writesEnabled alone is not enough -
+ * that flag only says the backend is permitted to write, not that a human has
+ * read what would happen.
+ *
+ * Preview and Apply both operate on the SAVED rules, so you never "preview X but
+ * apply Y". Webhook-triggered runs use the same saved rules.
  *
  * All numbers/logic come from the backend; this page only renders and posts.
  */
@@ -27,6 +34,7 @@ import type {
   AutomationRulesResponse,
   AutomationRun,
   AutomationStatus,
+  CostResolution,
 } from '@/lib/types';
 
 export default function AutomationPage() {
@@ -41,18 +49,84 @@ export default function AutomationPage() {
   );
 }
 
+/**
+ * A successful preview, tied to the exact state it was taken against.
+ *
+ * Apply is gated on this rather than on writesEnabled alone. writesEnabled only
+ * says the backend is *permitted* to write; it says nothing about whether anyone
+ * has looked at what would happen. Applying blind to a live storefront is the
+ * expensive mistake this page exists to prevent.
+ */
+interface PreviewGate {
+  report: AutomationReport;
+  /** Fingerprint of the saved rules the preview ran against. */
+  rulesFingerprint: string;
+  /** Guards against previewing one store and applying to another. */
+  shopDomain: string;
+}
+
+/**
+ * Order-independent fingerprint of a rule set.
+ *
+ * JSON.stringify alone is not safe here: key order follows insertion order, so
+ * two identical rule sets could fingerprint differently after a round trip
+ * through the API and spuriously invalidate a valid preview.
+ */
+function fingerprintRules(rules: AutomationRules | null): string {
+  if (rules === null) return '';
+  const stable = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.keys(value as Record<string, unknown>)
+          .sort()
+          .map((key) => [key, stable((value as Record<string, unknown>)[key])]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(stable(rules));
+}
+
 function AutomationConsole() {
   const status = useApi<AutomationStatus>('/automation/status');
   const rules = useApi<AutomationRulesResponse>('/automation/rules');
   const runs = useApi<{ runs: AutomationRun[] }>('/automation/runs?limit=10');
 
+  // Held here, not inside RunControls, because saving rules must be able to
+  // invalidate it - a preview of the previous rules says nothing about the new
+  // ones.
+  const [gate, setGate] = useState<PreviewGate | null>(null);
+
+  const writesEnabled = status.data?.writesEnabled ?? false;
+  const storeDomain = status.data?.storeDomain ?? '';
+  const savedFingerprint = fingerprintRules(rules.data?.effective ?? null);
+
   return (
     <div className="stack">
       <StatusCard status={status} />
-      <RuleEditor rules={rules} onSaved={() => rules.refetch()} writesEnabled={status.data?.writesEnabled ?? false} />
+      <RuleEditor
+        rules={rules}
+        onSaved={() => {
+          // Any rule change makes an existing preview meaningless.
+          setGate(null);
+          rules.refetch();
+        }}
+        writesEnabled={writesEnabled}
+      />
       <RunControls
-        writesEnabled={status.data?.writesEnabled ?? false}
-        onApplied={() => runs.refetch()}
+        writesEnabled={writesEnabled}
+        gate={gate}
+        savedFingerprint={savedFingerprint}
+        storeDomain={storeDomain}
+        onPreviewed={setGate}
+        onApplied={() => {
+          // A preview describes a store state that applying has just changed,
+          // so the gate must close again before another apply.
+          setGate(null);
+          runs.refetch();
+          status.refetch();
+        }}
       />
       <HistoryCard runs={runs} />
     </div>
@@ -83,10 +157,8 @@ function StatusCard({ status }: { status: ReturnType<typeof useApi<AutomationSta
             <Badge tone="neutral">{data.storeDomain}</Badge>
           </div>
           <p className="muted">{data.note}</p>
-          <p className="muted">
-            Cost source: {data.costSource.description} (scope {data.costSource.requiresScope}).
-            Writes need {data.writeScopeRequired}.
-          </p>
+          <CostResolutionView resolution={data.costResolution} />
+          <p className="muted">Price and visibility writes need {data.writeScopeRequired}.</p>
           {data.ruleProblems.length > 0 && (
             <Callout tone="warning" title="Rule problems">
               <ul className="note-list">
@@ -99,6 +171,56 @@ function StatusCard({ status }: { status: ReturnType<typeof useApi<AutomationSta
         </div>
       ) : null}
     </Card>
+  );
+}
+
+/**
+ * The cost hierarchy, in the order it is actually applied.
+ *
+ * Rendered as an ordered list rather than a sentence because the ORDER is the
+ * substance: which tier wins decides the price. The UNKNOWN tier is shown too -
+ * "this product has no usable cost and was skipped" is information the operator
+ * needs, and hiding it invites the assumption that a missing cost means zero.
+ */
+function CostResolutionView({ resolution }: { resolution: CostResolution }) {
+  return (
+    <div className="stack">
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="muted">Cost resolution order:</span>
+        {resolution.order.map((source, index) => (
+          <span key={source} className="row" style={{ gap: 8, alignItems: 'center' }}>
+            {index > 0 && <span className="muted" aria-hidden="true">→</span>}
+            <Badge tone={source === 'UNKNOWN' ? 'neutral' : 'info'}>{source}</Badge>
+          </span>
+        ))}
+      </div>
+      <ul className="note-list">
+        {resolution.tiers.map((tier) => (
+          <li key={tier.source}>
+            <span className="mono">{tier.source}</span>
+            {!tier.available && <span className="muted"> (unavailable)</span>}
+            {tier.requiresScope !== null && (
+              <span className="muted"> [needs {tier.requiresScope}]</span>
+            )}
+            <span className="muted"> — {tier.description}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="muted">
+        Manual costs {resolution.manualCostSupported ? 'are' : 'are not'} supported. Unknown-cost
+        policy: <span className="mono">{resolution.unknownCostPolicy}</span> — a product with no
+        usable cost is skipped, never priced as if the cost were zero.
+      </p>
+      {resolution.suppliers.map((supplier) => (
+        <p key={supplier.providerName} className="muted">
+          <span className="mono">{supplier.providerName}</span>: direct supplier cost API{' '}
+          <strong>{supplier.supplierCostApi ? 'available' : 'unavailable'}</strong>; Shopify
+          integration <strong>{supplier.shopifyIntegration ? 'used' : 'not used'}</strong>; manual
+          fallback available.
+          {supplier.limitation !== null && <> {supplier.limitation}</>}
+        </p>
+      ))}
+    </div>
   );
 }
 
@@ -154,6 +276,15 @@ function RuleEditor({
     (patch: Partial<AutomationRules['visibility']>) => {
       if (current === null) return;
       setDraft({ ...current, visibility: { ...current.visibility, ...patch } });
+      setSaved(false);
+    },
+    [current],
+  );
+  /** Top-level rule fields (exemptTags, maxItemsPerRun). */
+  const patchRoot = useCallback(
+    (patch: Partial<Pick<AutomationRules, 'exemptTags' | 'maxItemsPerRun'>>) => {
+      if (current === null) return;
+      setDraft({ ...current, ...patch });
       setSaved(false);
     },
     [current],
@@ -276,6 +407,47 @@ function RuleEditor({
             value={current.price.maxDecreasePercentage}
             onChange={(v) => patchPrice({ maxDecreasePercentage: v })}
           />
+          <NumberField
+            label="Minimum change amount"
+            value={current.price.minChangeAmount}
+            onChange={(v) => patchPrice({ minChangeAmount: v })}
+            hint="Skip changes smaller than this, so a rounding difference of a penny does not rewrite the catalogue."
+          />
+          <Toggle
+            label="Require a known cost"
+            checked={current.price.requireKnownCost}
+            onChange={(v) => patchPrice({ requireKnownCost: v })}
+          />
+        </div>
+
+        <h3 className="muted">Costs and fees</h3>
+        <p className="muted">
+          Subtracted from revenue before the margin is computed, so the target margin is a real
+          margin rather than a gross markup. Percentages apply to the selling price; the two cost
+          fields are flat amounts per unit.
+        </p>
+        <div className="form-grid">
+          <NumberField
+            label="Payment fee %"
+            value={current.price.paymentFeePercentage}
+            onChange={(v) => patchPrice({ paymentFeePercentage: v })}
+            hint="Card processing, e.g. 2.9."
+          />
+          <NumberField
+            label="Shopify fee %"
+            value={current.price.shopifyFeePercentage}
+            onChange={(v) => patchPrice({ shopifyFeePercentage: v })}
+          />
+          <NumberField
+            label="Advertising cost per unit"
+            value={current.price.advertisingCost}
+            onChange={(v) => patchPrice({ advertisingCost: v })}
+          />
+          <NumberField
+            label="Other costs per unit"
+            value={current.price.otherCosts}
+            onChange={(v) => patchPrice({ otherCosts: v })}
+          />
         </div>
 
         <h3 className="muted">Which products</h3>
@@ -336,6 +508,22 @@ function RuleEditor({
             onChange={(v) => patchVisibility({ hideUnknownCost: v })}
           />
         </div>
+
+        <h3 className="muted">Safety limits</h3>
+        <div className="form-grid">
+          <TextField
+            label="Exempt tags (comma-separated)"
+            value={toCsv(current.exemptTags)}
+            onChange={(v) => patchRoot({ exemptTags: fromCsv(v) })}
+            hint="Products carrying any of these tags are never touched, whatever the selection says. Use this to protect hand-priced products."
+          />
+          <NumberField
+            label="Max items per run"
+            value={current.maxItemsPerRun}
+            onChange={(v) => patchRoot({ maxItemsPerRun: v })}
+            hint="Hard ceiling on changes in a single run. Start low on a live store: a wrong rule then affects a handful of products instead of the whole catalogue."
+          />
+        </div>
       </div>
     </Card>
   );
@@ -345,15 +533,46 @@ function RuleEditor({
 
 function RunControls({
   writesEnabled,
+  gate,
+  savedFingerprint,
+  storeDomain,
+  onPreviewed,
   onApplied,
 }: {
   writesEnabled: boolean;
+  gate: PreviewGate | null;
+  savedFingerprint: string;
+  storeDomain: string;
+  onPreviewed: (gate: PreviewGate | null) => void;
   onApplied: () => void;
 }) {
-  const [report, setReport] = useState<AutomationReport | null>(null);
   const [busy, setBusy] = useState<'preview' | 'apply' | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  /**
+   * Why Apply is unavailable, or null when it is available.
+   *
+   * Returned as a sentence rather than a boolean so the button can explain
+   * itself - a disabled control with no reason is its own support ticket.
+   */
+  const blockedReason = ((): string | null => {
+    if (!writesEnabled) {
+      return 'Writes are disabled on the backend (AUTOMATION_ENABLED is not true).';
+    }
+    if (gate === null) {
+      return 'Run a preview first. Apply stays disabled until a preview succeeds.';
+    }
+    if (gate.rulesFingerprint !== savedFingerprint) {
+      return 'The rules changed after this preview. Preview again to see what the new rules would do.';
+    }
+    if (storeDomain !== '' && gate.shopDomain !== storeDomain) {
+      return `The preview ran against ${gate.shopDomain}, but the backend is now connected to ${storeDomain}. Preview again.`;
+    }
+    return null;
+  })();
+
+  const canApply = blockedReason === null && busy === null;
 
   const run = async (mode: 'preview' | 'apply') => {
     setBusy(mode);
@@ -361,15 +580,28 @@ function RunControls({
     try {
       const path = mode === 'preview' ? '/automation/preview' : '/automation/apply';
       const response = await apiPost<AutomationReport>(path, {});
-      setReport(response.data);
-      if (mode === 'apply') onApplied();
+      if (mode === 'preview') {
+        // Bind the preview to the state it was taken against.
+        onPreviewed({
+          report: response.data,
+          rulesFingerprint: fingerprintRules(response.data.rules),
+          shopDomain: response.data.shopDomain,
+        });
+      } else {
+        onPreviewed(null);
+        onApplied();
+      }
     } catch (caught) {
+      // A failed preview must not leave a previous successful one in place.
+      if (mode === 'preview') onPreviewed(null);
       setError(caught instanceof ApiError ? caught : new ApiError('UNKNOWN', 'Run failed.', 0));
     } finally {
       setBusy(null);
       setConfirmOpen(false);
     }
   };
+
+  const report = gate?.report ?? null;
 
   return (
     <Card
@@ -382,8 +614,8 @@ function RunControls({
           <button
             className="btn btn--primary btn--sm"
             onClick={() => setConfirmOpen(true)}
-            disabled={busy !== null || !writesEnabled}
-            title={writesEnabled ? undefined : 'Enable writes on the backend first'}
+            disabled={!canApply}
+            title={blockedReason ?? undefined}
           >
             Apply…
           </button>
@@ -394,6 +626,11 @@ function RunControls({
         {error !== null && (
           <Callout tone="danger" title={error.code}>
             {error.message}
+          </Callout>
+        )}
+        {blockedReason !== null && (
+          <Callout tone={writesEnabled ? 'warning' : 'info'} title="Apply is disabled">
+            {blockedReason}
           </Callout>
         )}
         {report === null ? (
@@ -410,8 +647,13 @@ function RunControls({
           <div className="stack">
             <Callout tone="warning" title="This changes real products">
               Prices and visibility on <span className="mono">{report?.shopDomain ?? 'the store'}</span>{' '}
-              will change according to the saved rules. Every change is recorded and reversible from
-              history, but customers see the result immediately.
+              will change according to the saved rules, exactly as listed in the preview above.
+              Customers see the result immediately.
+            </Callout>
+            <Callout tone="info" title="What is and is not recoverable">
+              Every applied action is recorded in audit history. There is no one-click
+              rollback: undoing a change means editing the affected products, so read the
+              preview before continuing.
             </Callout>
             <div className="row" style={{ gap: 8 }}>
               <button className="btn" onClick={() => setConfirmOpen(false)} disabled={busy !== null}>

@@ -357,12 +357,47 @@ export interface AutomationRules {
   maxItemsPerRun: number;
 }
 
+/** The cost-source hierarchy, most to least authoritative. */
+export type CostSourceName = 'SUPPLIER_API' | 'SHOPIFY_UNIT_COST' | 'MANUAL' | 'UNKNOWN';
+
+export interface CostResolutionTier {
+  source: CostSourceName;
+  description: string;
+  /** False when no registered provider can supply this tier at all. */
+  available: boolean;
+  requiresScope: string | null;
+}
+
+export interface SupplierCostSupport {
+  providerName: string;
+  supplierCostApi: boolean;
+  shopifyIntegration: boolean;
+  /** Why supplierCostApi is false. Null when it is true. */
+  limitation: string | null;
+}
+
+/**
+ * How a product's cost is resolved.
+ *
+ * Replaces the old single `costSource` field, which described Shopify's
+ * unitCost as though it were the only source - true of the original MVP, and
+ * misleading once the supplier registry and manual costs existed.
+ */
+export interface CostResolution {
+  order: CostSourceName[];
+  manualCostSupported: boolean;
+  /** e.g. SKIP_AUTOMATIC_PRICING - an unknown cost is never treated as 0. */
+  unknownCostPolicy: string;
+  tiers: CostResolutionTier[];
+  suppliers: SupplierCostSupport[];
+}
+
 export interface AutomationStatus {
   writesEnabled: boolean;
   storeDomain: string;
   effectiveRules: AutomationRules;
   ruleProblems: string[];
-  costSource: { field: string; description: string; requiresScope: string };
+  costResolution: CostResolution;
   writeScopeRequired: string;
   webhookTriggersEnabled: boolean;
   note: string;
