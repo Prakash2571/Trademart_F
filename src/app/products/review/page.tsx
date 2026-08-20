@@ -21,6 +21,7 @@ import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
 import { formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
+  ApproveResult,
   AutomationStatus,
   ManualCostRecord,
   ProductDto,
@@ -139,6 +140,7 @@ function ReviewItem({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const [partial, setPartial] = useState<string | null>(null);
   const [costTarget, setCostTarget] = useState<ProductVariantDto | 'product' | null>(null);
 
   const currency =
@@ -149,10 +151,21 @@ function ReviewItem({
   const approve = async () => {
     setBusy('approve');
     setError(null);
+    setPartial(null);
     try {
-      // Reuses the backend's approve logic: removes the review/hidden tags and
-      // sets the product ACTIVE. Not reimplemented here.
-      await apiPost<unknown>('/automation/approve', { productId: product.shopifyProductId });
+      // Backend removes review/hidden tags, sets ACTIVE, and publishes to the
+      // Online Store. Activation and publication are reported separately.
+      const result = await apiPost<ApproveResult>('/automation/approve', {
+        productId: product.shopifyProductId,
+      });
+      if (!result.data.published) {
+        // Do NOT claim full success: the product is ACTIVE but not visible.
+        setPartial(
+          `Activated, but publication failed${
+            result.data.publishError !== null ? `: ${result.data.publishError}` : ''
+          }. The product is ACTIVE but not visible on the Online Store. Retry, or check the write_publications scope.`,
+        );
+      }
       onChanged();
     } catch (caught) {
       setError(
@@ -244,6 +257,11 @@ function ReviewItem({
         {error !== null && (
           <Callout tone="danger" title={error.code}>
             {error.message}
+          </Callout>
+        )}
+        {partial !== null && (
+          <Callout tone="warning" title="Activated, but publication failed">
+            {partial}
           </Callout>
         )}
 

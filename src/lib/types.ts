@@ -640,6 +640,20 @@ export interface CreatedVariant {
 }
 
 /**
+ * POST /api/automation/approve response. Activation and publication are
+ * distinct Shopify operations reported separately, so an ACTIVE-but-unpublished
+ * outcome is explicit rather than hidden behind a blanket success flag.
+ */
+export interface ApproveResult {
+  shopifyProductId: string;
+  activated: boolean;
+  tagsRemoved: string[];
+  published: boolean;
+  publications: { publicationId: string; name: string; isPublished: boolean }[];
+  publishError: string | null;
+}
+
+/**
  * POST /api/shopify/products response. Deliberately NOT a full ProductDto - it
  * is the create result plus enough variant identity (id + sku + optionValues)
  * to persist per-variant manual costs without assuming variant order.
