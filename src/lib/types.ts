@@ -482,3 +482,147 @@ export interface AutomationRun {
   trigger: string;
   summary: AutomationSummary | null;
 }
+
+
+/* ------------------------------------------------- Shopify capabilities --- */
+
+/**
+ * Why a feature is or is not usable against the connected store.
+ *
+ * The distinction is the point: SCOPE_MISSING is fixed by re-authorising with
+ * the scope, NOT_IMPLEMENTED cannot be fixed by granting anything. The UI must
+ * never tell someone to grant a permission that would not help.
+ */
+export type CapabilityStatus =
+  | 'AVAILABLE'
+  | 'SCOPE_MISSING'
+  | 'NOT_IMPLEMENTED'
+  | 'SCOPES_UNKNOWN';
+
+export interface CapabilityFeature {
+  key: string;
+  group: string;
+  action: string;
+  title: string;
+  requiredScopes: string[];
+  implemented: boolean;
+  operations: string[];
+  routes: string[];
+  note?: string;
+  status: CapabilityStatus;
+  available: boolean;
+  missingScopes: string[];
+}
+
+export interface ShopifyCapabilities {
+  configured: boolean;
+  storeDomain: string;
+  authStrategy: ShopifyAuthStrategy | string;
+  /**
+   * group -> action -> granted. `null` means undeterminable (a static token
+   * does not report its scopes), which is not the same as false.
+   */
+  capabilities: Record<string, Record<string, boolean | null>>;
+  features: CapabilityFeature[];
+  scopes: {
+    required: string[];
+    requested: string[];
+    granted: string[] | null;
+    missing: string[];
+    notRequested: string[];
+    unused: string[];
+  };
+  scopesKnown: boolean;
+  note: string;
+}
+
+/* ----------------------------------------------------- storefront/themes -- */
+
+export interface ThemeDto {
+  id: string;
+  name: string;
+  role: string | null;
+  live: boolean;
+  updatedAt?: string | null;
+  previewUrl?: string | null;
+}
+
+export interface StorefrontStatus {
+  liveTheme: ThemeDto | null;
+  liveThemeError: string | null;
+  requiredScope: string;
+  capabilities: {
+    listThemes: boolean;
+    readThemeFiles: boolean;
+    editLiveTheme: boolean;
+    editDraftTheme: boolean;
+    publishTheme: boolean;
+  };
+  writeStatus: string;
+  note: string;
+}
+
+export interface ThemeFileDto {
+  filename: string;
+  body: string | null;
+  size?: number | null;
+  contentType?: string | null;
+}
+
+/* ---------------------------------------------------------- suppliers ----- */
+
+export interface SupplierCapabilityFlags {
+  identifyProduct: boolean;
+  shopifyIntegration: boolean;
+  searchProducts: boolean;
+  getProduct: boolean;
+  getSupplierCost: boolean;
+  getShippingQuote: boolean;
+  getInventory: boolean;
+  createOrder: boolean;
+  cancelOrder: boolean;
+  getOrder: boolean;
+  getTracking: boolean;
+}
+
+export interface SupplierProviderDto {
+  providerName: string;
+  capabilities: SupplierCapabilityFlags;
+  /** Why a false capability is false, keyed by capability name. */
+  limitations: Partial<Record<keyof SupplierCapabilityFlags, string>>;
+}
+
+/* -------------------------------------------------------- manual costs ---- */
+
+export interface ManualCostRecord {
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  amount: number;
+  currencyCode: string;
+  costSource: string;
+  /** True when this value beats Shopify's cost per item. */
+  override: boolean;
+  note: string | null;
+  updatedAt: string | null;
+}
+
+/* ----------------------------------------------------------- inventory ---- */
+
+export interface LocationDto {
+  id: string;
+  name: string;
+  active?: boolean | null;
+  shipsInventory?: boolean | null;
+  address?: {
+    city?: string | null;
+    country?: string | null;
+  } | null;
+}
+
+export interface InventorySetResult {
+  inventoryItemId: string;
+  locationId: string;
+  quantity: number;
+  /** Present when Shopify reported the resulting on-hand value. */
+  applied?: boolean;
+}

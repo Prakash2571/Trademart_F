@@ -9,6 +9,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 
 import { DataTable, type Column } from '@/components/DataTable';
 import { Badge, Callout, Card, Modal, PageHeader, supplierTone } from '@/components/ui';
@@ -129,7 +130,17 @@ export default function ProductsPage() {
     <>
       <PageHeader
         title="Products"
-        description="Read-only view of Shopify products. Bulk editing is intentionally not enabled."
+        description="Browse Shopify products, then open one to edit its details, prices, supplier cost and stock. Bulk editing is intentionally not enabled."
+        actions={
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn btn--sm" href="/products/review">
+              Review queue
+            </Link>
+            <Link className="btn btn--primary btn--sm" href="/products/new">
+              Add product
+            </Link>
+          </div>
+        }
       />
 
       <div className="stack">
@@ -206,6 +217,14 @@ export default function ProductsPage() {
       {selected && (
         <Modal title={selected.title} onClose={() => setSelected(null)}>
           <div className="stack">
+            <div className="row" style={{ gap: 8 }}>
+              <Link
+                className="btn btn--primary btn--sm"
+                href={`/products/${encodeURIComponent(selected.shopifyProductId)}`}
+              >
+                Open editor
+              </Link>
+            </div>
             <div className="kv">
               <div className="kv__key">Shopify ID</div>
               <div className="kv__value mono">{selected.shopifyProductId}</div>
