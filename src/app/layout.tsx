@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 
 import { AuthGate } from '@/components/AuthGate';
 import { ConnectionPill } from '@/components/ConnectionPill';
+import { LiveStoreBanner } from '@/components/LiveStoreBanner';
 import { OperatorMenu } from '@/components/OperatorMenu';
 import { Sidebar } from '@/components/Sidebar';
 import { OperatorProvider } from '@/lib/operator';
@@ -30,7 +31,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </div>
               </header>
               <main className="content">
-                <AuthGate>{children}</AuthGate>
+                {/* Inside AuthGate: the banner queries the API, which requires a
+                    session when OPERATOR_PROTECT_READS=true, and an unsigned-in
+                    visitor has nothing to be warned about yet. */}
+                <AuthGate>
+                  <LiveStoreBanner />
+                  {children}
+                </AuthGate>
               </main>
             </div>
           </div>
