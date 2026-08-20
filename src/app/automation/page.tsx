@@ -63,6 +63,12 @@ interface PreviewGate {
   rulesFingerprint: string;
   /** Guards against previewing one store and applying to another. */
   shopDomain: string;
+  /**
+   * Server-issued preview token. Apply sends this; the backend independently
+   * verifies it (store, rules hash, expiry, single-use), so the client gate is
+   * defence-in-depth rather than the only check.
+   */
+  previewId: string | null;
 }
 
 /**
@@ -563,6 +569,9 @@ function RunControls({
     if (gate === null) {
       return 'Run a preview first. Apply stays disabled until a preview succeeds.';
     }
+    if (gate.previewId === null) {
+      return 'This preview did not return a token, so the backend cannot authorise an apply. Preview again.';
+    }
     if (gate.rulesFingerprint !== savedFingerprint) {
       return 'The rules changed after this preview. Preview again to see what the new rules would do.';
     }
@@ -578,16 +587,24 @@ function RunControls({
     setBusy(mode);
     setError(null);
     try {
-      const path = mode === 'preview' ? '/automation/preview' : '/automation/apply';
-      const response = await apiPost<AutomationReport>(path, {});
       if (mode === 'preview') {
+        const response = await apiPost<AutomationReport>('/automation/preview', {});
+        const previewId =
+          (response.meta as { preview?: { previewId?: string } } | undefined)?.preview
+            ?.previewId ?? null;
         // Bind the preview to the state it was taken against.
         onPreviewed({
           report: response.data,
           rulesFingerprint: fingerprintRules(response.data.rules),
           shopDomain: response.data.shopDomain,
+          previewId,
         });
       } else {
+        // Apply carries the server-issued preview token; the backend rejects an
+        // apply whose preview is missing, stale, expired or already used.
+        await apiPost<AutomationReport>('/automation/apply', {
+          previewId: gate?.previewId ?? null,
+        });
         onPreviewed(null);
         onApplied();
       }
