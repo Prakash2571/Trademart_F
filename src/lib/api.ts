@@ -17,7 +17,17 @@
  *
  * Backend envelopes:
  *   success: { success: true, data, meta? }
- *   failure: { success: false, code, message, details? }
+ *   failure: { success: false, code, message, details?, requestId?,
+ *              error: { code, message, requestId?, details? } }
+ *
+ * The failure body carries both a flat and a nested shape. The nested `error`
+ * object is preferred when present because it is the one that carries requestId;
+ * the flat keys are read as a fallback so this client still works against an
+ * older backend.
+ *
+ * CORRELATION: every response carries an X-Request-ID header, which is surfaced
+ * on ApiError so the UI can show an id an operator can quote. That id ties the
+ * failure to the backend log lines and the audit entry for the same request.
  */
 
 import type { PageMeta } from './types';
@@ -55,13 +65,26 @@ export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
   readonly details?: unknown;
+  /**
+   * Correlation id for the failed request, from the X-Request-ID response header
+   * or the error body. Quoting this makes a failure findable in the backend logs
+   * and in the audit trail.
+   */
+  readonly requestId: string | null;
 
-  constructor(code: string, message: string, status: number, details?: unknown) {
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    details?: unknown,
+    requestId: string | null = null,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
     this.details = details;
+    this.requestId = requestId;
   }
 
   /** True when the operator needs to change configuration, not retry. */
@@ -77,11 +100,47 @@ export class ApiError extends Error {
   get isAuthProblem(): boolean {
     return this.code === 'UNAUTHORIZED' || this.code === 'CSRF_INVALID';
   }
+
+  /**
+   * True when the world moved under the operator and the fix is to reload.
+   *
+   * These are all deliberate refusals rather than faults, and they share one
+   * remedy: look at the current state again, then redo the action. Grouping them
+   * lets the UI offer a Refresh action instead of a bare error.
+   */
+  get isStaleStateProblem(): boolean {
+    return (
+      this.code === 'PREVIEW_STALE' ||
+      this.code === 'PREVIEW_EXPIRED' ||
+      this.code === 'PREVIEW_ALREADY_APPLIED' ||
+      this.code === 'PREVIEW_REQUIRED' ||
+      this.code === 'PRODUCT_CHANGED'
+    );
+  }
+
+  /** True when something else is holding a lock, or a dependency is degraded. */
+  get isTemporary(): boolean {
+    return (
+      this.code === 'AUTOMATION_ALREADY_RUNNING' ||
+      this.code === 'SHOPIFY_DEGRADED' ||
+      this.code === 'SHOPIFY_THROTTLED' ||
+      this.code === 'SHOPIFY_TIMEOUT' ||
+      this.code === 'RATE_LIMITED' ||
+      this.code === 'IDEMPOTENCY_IN_PROGRESS'
+    );
+  }
 }
 
 export interface ApiResult<T> {
   data: T;
   meta?: PageMeta & Record<string, unknown>;
+  /**
+   * HTTP status. Exposed because 207 Multi-Status is a real outcome here: a
+   * product create can succeed partially (created but not published), and a
+   * caller that only looked at `data` would report it as a clean success.
+   */
+  status: number;
+  requestId: string | null;
 }
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -90,7 +149,36 @@ interface RequestOptions {
   method?: HttpMethod;
   body?: unknown;
   signal?: AbortSignal;
+  /**
+   * Value for the Idempotency-Key header.
+   *
+   * Deliberately NOT generated automatically for every POST. An idempotency key
+   * is only meaningful when the CALLER can reuse the same value across retries -
+   * a fresh key per attempt provides no protection at all and would just fill the
+   * backend's key collection. Callers that retry (or that guard a
+   * double-click) pass a stable key explicitly; see newIdempotencyKey.
+   */
+  idempotencyKey?: string;
 }
+
+/**
+ * Generates a key for one logical operation.
+ *
+ * Call this ONCE per user intent - typically when a form is first submitted - and
+ * reuse the value for every retry of that same submission. Generating a new key
+ * per attempt defeats the purpose.
+ */
+export function newIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for older browsers. Only needs to be unique per operator action, not
+  // globally unguessable - the key is not a credential.
+  return `tm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+export const REQUEST_ID_HEADER = 'X-Request-ID';
 
 /** Methods that change state and therefore need a CSRF token. */
 const MUTATING = new Set<HttpMethod>(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -106,6 +194,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   if (MUTATING.has(method)) {
     const csrf = readCookie(CSRF_COOKIE);
     if (csrf !== undefined) headers[CSRF_HEADER] = csrf;
+  }
+  if (options.idempotencyKey !== undefined) {
+    headers[IDEMPOTENCY_HEADER] = options.idempotencyKey;
   }
 
   let response: Response;
@@ -147,16 +238,33 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
   }
 
   const body = (payload ?? {}) as Record<string, unknown>;
+  // The header is authoritative: it is set before the route runs, so it is present
+  // even on a response the route never got to write (a 500 from middleware).
+  const headerRequestId = response.headers.get(REQUEST_ID_HEADER);
 
   if (!response.ok || body['success'] === false) {
-    throw new ApiError(
-      typeof body['code'] === 'string' ? body['code'] : 'REQUEST_FAILED',
-      typeof body['message'] === 'string'
-        ? body['message']
-        : `Request failed with HTTP ${response.status}.`,
-      response.status,
-      body['details'],
-    );
+    // Prefer the nested `error` object - it is the shape that carries requestId -
+    // and fall back to the flat keys so an older backend still reports properly.
+    const nested = (body['error'] ?? {}) as Record<string, unknown>;
+    const code =
+      typeof nested['code'] === 'string'
+        ? nested['code']
+        : typeof body['code'] === 'string'
+          ? body['code']
+          : 'REQUEST_FAILED';
+    const message =
+      typeof nested['message'] === 'string'
+        ? nested['message']
+        : typeof body['message'] === 'string'
+          ? body['message']
+          : `Request failed with HTTP ${response.status}.`;
+    const details = nested['details'] ?? body['details'];
+    const requestId =
+      headerRequestId ??
+      (typeof nested['requestId'] === 'string' ? nested['requestId'] : null) ??
+      (typeof body['requestId'] === 'string' ? body['requestId'] : null);
+
+    throw new ApiError(code, message, response.status, details, requestId);
   }
 
   // /api/health is intentionally unwrapped, so fall back to the whole body.
@@ -164,9 +272,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     return {
       data: body['data'] as T,
       meta: body['meta'] as (PageMeta & Record<string, unknown>) | undefined,
+      status: response.status,
+      requestId: headerRequestId,
     };
   }
-  return { data: body as T };
+  return { data: body as T, status: response.status, requestId: headerRequestId };
 }
 
 export function apiGet<T>(path: string, signal?: AbortSignal): Promise<ApiResult<T>> {
@@ -176,9 +286,12 @@ export function apiGet<T>(path: string, signal?: AbortSignal): Promise<ApiResult
 export function apiPost<T>(
   path: string,
   body: unknown,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; idempotencyKey?: string } = {},
 ): Promise<ApiResult<T>> {
-  return request<T>(path, { method: 'POST', body, signal });
+  const request_: RequestOptions = { method: 'POST', body };
+  if (options.signal !== undefined) request_.signal = options.signal;
+  if (options.idempotencyKey !== undefined) request_.idempotencyKey = options.idempotencyKey;
+  return request<T>(path, request_);
 }
 
 export function apiPut<T>(

@@ -25,30 +25,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # setup-node's `cache: npm` hashes a lockfile to build the cache key and
-      # FAILS the whole job if none exists. A lockfile could not be generated
-      # where this repo was authored (the npm registry was unreachable), so if
-      # one is not committed we generate it here FIRST, using the runner's
-      # preinstalled node, which does have registry access. This runs before
-      # setup-node so the cache step finds the file, and lets the job use
-      # `npm ci` either way.
-      #
-      # Commit package-lock.json (npm install --package-lock-only) to make the
-      # install fully reproducible; this step then no-ops.
-      - name: Ensure a lockfile exists
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "Committed lockfile present."
-          else
-            echo "::warning title=No committed lockfile::Generating package-lock.json for this run only. Commit it (npm install --package-lock-only) for reproducible installs."
-            npm install --package-lock-only --no-audit --no-fund
-          fi
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
+      # `npm ci` ONLY. package-lock.json is committed (lockfileVersion 3, every
+      # package carrying an integrity hash), so this installs the exact resolved
+      # tree and fails loudly if the lockfile and package.json disagree. The
+      # earlier "generate a lockfile if none exists" step has been removed now
+      # that a real one exists: a fallback that silently resolves fresh versions
+      # would let the image ship dependencies CI never tested.
       - name: Install dependencies
         run: npm ci
 

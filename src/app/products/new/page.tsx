@@ -13,11 +13,11 @@
  * request body, so nothing is sent that the operator has not seen.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { Badge, Callout, Card, PageHeader } from '@/components/ui';
-import { ApiError, apiPost, apiPut } from '@/lib/api';
+import { Badge, Callout, Card, ErrorCallout, PageHeader } from '@/components/ui';
+import { ApiError, apiPost, apiPut, newIdempotencyKey } from '@/lib/api';
 import type { CreatedVariant, ProductCreateResult } from '@/lib/types';
 
 interface OptionDraft {
@@ -89,6 +89,18 @@ function NewProductWizard() {
   const [costWarning, setCostWarning] = useState<string | null>(null);
   const [created, setCreated] = useState<ProductCreateResult | null>(null);
 
+  /**
+   * Idempotency key for the create POST.
+   *
+   * Generated ONCE per submission and held here so that if the response is lost -
+   * the product was created but the browser never heard back - clicking submit
+   * again REUSES the key. The backend then replays the stored result instead of
+   * creating a second product. Cleared on success, so the next product gets its
+   * own key. A permanent per-product key would be wrong here: there is no product
+   * id yet to derive one from, and the point is to guard the create itself.
+   */
+  const idempotencyKeyRef = useRef<string | null>(null);
+
   const parsedOptions = useMemo(
     () =>
       options
@@ -159,9 +171,18 @@ function NewProductWizard() {
     setBusy(true);
     setError(null);
     setCostWarning(null);
+    // Reuse the pending key if this is a retry of a failed submission; mint one
+    // otherwise. Reused across retries, fresh per new submission.
+    if (idempotencyKeyRef.current === null) {
+      idempotencyKeyRef.current = newIdempotencyKey();
+    }
     try {
-      const response = await apiPost<ProductCreateResult>('/shopify/products', requestBody);
+      const response = await apiPost<ProductCreateResult>('/shopify/products', requestBody, {
+        idempotencyKey: idempotencyKeyRef.current,
+      });
       const product = response.data;
+      // The create landed. Release the key so the next product is a new operation.
+      idempotencyKeyRef.current = null;
       setCreated(product);
 
       // Manual costs are a separate concern (/api/costs), recorded AFTER
@@ -275,9 +296,7 @@ function NewProductWizard() {
       </Card>
 
       {error !== null && (
-        <Callout tone="danger" title={error.code}>
-          {error.message}
-        </Callout>
+        <ErrorCallout error={error} />
       )}
 
       {step === 0 && (

@@ -23,7 +23,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 
-import { Badge, Callout, Card, PageHeader, Modal } from '@/components/ui';
+import { Badge, Callout, Card, ErrorCallout, PageHeader, Modal } from '@/components/ui';
 import { DataTable, type Column } from '@/components/DataTable';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPost, apiPut } from '@/lib/api';
@@ -148,9 +148,7 @@ function StatusCard({ status }: { status: ReturnType<typeof useApi<AutomationSta
       {loading && data === null ? (
         <p className="muted">Loading…</p>
       ) : error !== null ? (
-        <Callout tone="danger" title={error.code}>
-          {error.message}
-        </Callout>
+        <ErrorCallout error={error} />
       ) : data !== null ? (
         <div className="stack">
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -641,9 +639,7 @@ function RunControls({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {blockedReason !== null && (
           <Callout tone={writesEnabled ? 'warning' : 'info'} title="Apply is disabled">

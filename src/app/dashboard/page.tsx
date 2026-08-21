@@ -14,6 +14,7 @@ import { useApi } from '@/hooks/useApi';
 import { Card, Callout, ErrorState, PageHeader, SkeletonStats, StatCard } from '@/components/ui';
 import { formatAmount, formatDateTime, formatNumber, storeSubdomain } from '@/lib/format';
 import type { DashboardSummary } from '@/lib/types';
+import { AttentionPanel } from './AttentionPanel';
 
 export default function DashboardPage() {
   const { data, loading, error, refetch } = useApi<DashboardSummary>('/dashboard/summary');
@@ -60,6 +61,13 @@ export default function DashboardPage() {
               listed below.
             </Callout>
           )}
+
+          {/*
+            Placed ABOVE the totals on purpose. Totals answer "how big is the
+            store"; this answers "what do I need to do", which is the question an
+            operator actually opens the dashboard with.
+          */}
+          <AttentionPanel />
 
           <div className="grid grid--stats">
             <StatCard

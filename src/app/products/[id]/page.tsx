@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
-import { Badge, Callout, Card, ErrorState, Modal, PageHeader } from '@/components/ui';
+import { Badge, Callout, Card, ErrorCallout, ErrorState, Modal, PageHeader } from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
@@ -195,9 +195,7 @@ function PublicationSection({
           </Callout>
         )}
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         <p className="muted">
           A product&apos;s ACTIVE status only clears the draft flag. It is visible to customers
@@ -363,9 +361,7 @@ function DetailsEditor({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {done && !dirty && (
           <Callout tone="info" title="Saved">
@@ -470,9 +466,7 @@ function TagEditor({
     <Card title="Tags">
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         <p className="muted">
           Tags are added and removed individually. Trademart never replaces the whole tag list,
@@ -610,9 +604,7 @@ function VariantEditor({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         <p className="muted">
           Editing a price here only changes this form. Nothing reaches Shopify until you press
@@ -820,9 +812,7 @@ function InventoryEditor({
           </Callout>
         )}
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {done !== null && (
           <Callout tone="info" title="Stock updated">

@@ -12,13 +12,13 @@
  * the tag removal and the publish stay in one place on the backend.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
-import { Badge, Callout, Card, EmptyState, ErrorState, PageHeader } from '@/components/ui';
+import { Badge, Callout, Card, EmptyState, ErrorCallout, ErrorState, PageHeader } from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
-import { ApiError, apiPatch, apiPost } from '@/lib/api';
+import { ApiError, apiPatch, apiPost, newIdempotencyKey } from '@/lib/api';
 import {
   describeCapability,
   useCapabilities,
@@ -171,6 +171,17 @@ function ReviewItem({
   const [partial, setPartial] = useState<string | null>(null);
   const [costTarget, setCostTarget] = useState<ProductVariantDto | 'product' | null>(null);
 
+  /**
+   * Per-approval idempotency key.
+   *
+   * Deliberately NOT a deterministic `approve-${productId}`: a permanent key would
+   * make a SECOND, intentional approval weeks later (after the product was
+   * unpublished and needs re-approving) silently replay the first result instead
+   * of running. This key covers one approval attempt and its retries, then resets
+   * on success so a later re-approval is a genuinely new operation.
+   */
+  const approveKeyRef = useRef<string | null>(null);
+
   const currency =
     product.minPrice?.currencyCode ?? product.variants[0]?.price?.currencyCode ?? 'GBP';
 
@@ -180,12 +191,19 @@ function ReviewItem({
     setBusy('approve');
     setError(null);
     setPartial(null);
+    if (approveKeyRef.current === null) {
+      approveKeyRef.current = newIdempotencyKey();
+    }
     try {
       // Backend removes review/hidden tags, sets ACTIVE, and publishes to the
       // Online Store. Activation and publication are reported separately.
-      const result = await apiPost<ApproveResult>('/automation/approve', {
-        productId: product.shopifyProductId,
-      });
+      const result = await apiPost<ApproveResult>(
+        '/automation/approve',
+        { productId: product.shopifyProductId },
+        { idempotencyKey: approveKeyRef.current },
+      );
+      // Approval landed; release the key so a future re-approval is a new action.
+      approveKeyRef.current = null;
       if (!result.data.published) {
         // Publication failed, so the backend kept the product DRAFT and in the
         // review queue. Do NOT imply it was activated or is visible.
@@ -288,9 +306,7 @@ function ReviewItem({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {partial !== null && (
           <Callout tone="warning" title="Kept in review — publication failed">

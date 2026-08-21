@@ -67,6 +67,12 @@ export interface ShopifyStatus {
   token: TokenDiagnostics | null;
   connected: boolean;
   shop: ShopDto | null;
+  /**
+   * Store classification, refined with Shopify's real isDevelopmentStore flag
+   * when connected. The single authority for "is this a live store?" - the
+   * System page reads it from here rather than from a separate endpoint.
+   */
+  storeSafety?: ShopifyStoreSafety;
   error: { code: string; message: string } | null;
 }
 
@@ -661,14 +667,247 @@ export interface ApproveResult {
 export interface ProductCreateResult {
   shopifyProductId: string;
   title: string;
-  /** Final status: DRAFT unless publish was requested AND verified. */
+  /** What Shopify reports NOW - DRAFT unless publish was requested AND verified. */
   status: string;
+  /** What the caller asked for, so a divergence from `status` is visible. */
+  desiredStatus: string;
   variantsCreated: number;
   mediaAttached: number;
-  /** True only when publication was requested and verified. */
+  /** True only when publication was requested and verified by read-back. */
   published: boolean;
   /** Set when publish was requested but failed; product left DRAFT. */
   publishError: string | null;
   publications: { publicationId: string; name: string; isPublished: boolean }[];
   variants: CreatedVariant[];
+  /**
+   * The ONLY field that may be shown as "customers can see it". Requires a
+   * verified ACTIVE status AND a verified publication - never inferred from
+   * `status`, which is wrong in both directions.
+   */
+  visibleToCustomers: boolean;
+  /**
+   * True when the product EXISTS but did not reach the requested end state
+   * (most commonly: publish failed and it was left a safe DRAFT). The HTTP
+   * response is 207 in this case - see ApiResult.status.
+   */
+  partialSuccess: boolean;
+  /** Ordered, human-readable account of what did not go to plan. */
+  warnings: string[];
+}
+
+/* ===========================================================================
+ * Operations surface: publication visibility, audit, diagnostics, system
+ *
+ * These mirror the REAL backend responses. Where an earlier draft assumed
+ * endpoints that were consolidated (a standalone /automation/lock, a separate
+ * /diagnostics/store-mode), the types follow what the backend actually serves:
+ * the automation lock is reported by GET /automation/status as `activeRun`, and
+ * store classification by GET /shopify/status as `storeSafety`.
+ * ======================================================================== */
+
+/**
+ * A product's real customer visibility, from
+ * GET /api/shopify/products/:id/publications.
+ *
+ * Visibility is a CONJUNCTION: ACTIVE status AND published to the Online Store.
+ * ACTIVE alone does not mean visible (it may be published nowhere), and published
+ * alone does not mean visible (it may be DRAFT). `visibleToCustomers` is the only
+ * field that answers "can a customer find this?", and `reason` always explains it.
+ */
+export interface ProductVisibility {
+  shopifyProductId: string;
+  status: string | null;
+  publications: PublicationChannelState[];
+  onlineStore: PublicationChannelState | null;
+  /** Published to at least one channel - NOT the same as visible. */
+  publishedAnywhere: boolean;
+  visibleToCustomers: boolean;
+  reason: string;
+}
+
+export interface PublicationChannelState {
+  publicationId: string;
+  name: string;
+  isPublished: boolean;
+  publishDate: string | null;
+}
+
+/* ---------------------------------------------------------------- audit ---- */
+
+export interface AuditEntry {
+  _id?: string;
+  shopDomain: string;
+  actor: string;
+  authMethod: string | null;
+  at: string;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  before: unknown;
+  after: unknown;
+  requestId: string | null;
+  /**
+   * PARTIAL is real: a bulk apply that changed 37 of 40 products is neither a
+   * success nor a failure, and the trail must not round it to either.
+   */
+  result: 'SUCCESS' | 'PARTIAL' | 'FAILURE';
+  errorCode: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/* -------------------------------------------------------------- webhooks --- */
+
+export type WebhookEventState =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'PROCESSED'
+  | 'FAILED'
+  | 'IGNORED';
+
+export interface WebhookEventDto {
+  _id?: string;
+  shopDomain: string;
+  topic: string;
+  webhookId: string | null;
+  receivedAt: string;
+  processedAt: string | null;
+  status: WebhookEventState;
+  attempts: number;
+  nextAttemptAt: string | null;
+  error: string | null;
+  errorCode: string | null;
+  ignoredReason: string | null;
+  requestId: string | null;
+}
+
+export interface WebhookQueueStats {
+  counts: Partial<Record<WebhookEventState, number>>;
+  oldestPending: string | null;
+  lastProcessedAt: string | null;
+  failed: number;
+  workerRunning: boolean;
+}
+
+export interface WebhookEventsResponse {
+  events: WebhookEventDto[];
+  stats: WebhookQueueStats;
+}
+
+/* ------------------------------------------------------------ integrity ---- */
+
+export interface IntegrityFinding {
+  code: string;
+  severity: 'warning' | 'info';
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  title: string;
+  detail: string;
+  /** Never performed automatically - every finding has more than one cause. */
+  recommendedAction: string;
+}
+
+export interface IntegrityReport {
+  shopDomain: string;
+  checkedAt: string;
+  productsInspected: boolean;
+  productsScanned: number;
+  truncated: boolean;
+  publicationChecked: boolean;
+  findings: IntegrityFinding[];
+  counts: Record<string, number>;
+  /** Checks that could not run, and why. Never silently omitted. */
+  skipped: { check: string; reason: string }[];
+}
+
+/* --------------------------------------------------------- shopify status -- */
+
+/**
+ * Store classification, nested under GET /api/shopify/status as `storeSafety`.
+ *
+ * There is deliberately no standalone endpoint for this: one authority for
+ * "is this a live store?" is safer than two that can disagree.
+ */
+export interface ShopifyStoreSafety {
+  classification: 'DEVELOPMENT' | 'LIVE' | 'UNKNOWN';
+  source: 'shopify' | 'config' | 'unknown';
+  /** Whether automated tooling (tests, seed/smoke scripts) may write. */
+  toolingWritesAllowed: boolean;
+  allowLiveStoreWrites: boolean;
+  reason: string;
+}
+
+/* ------------------------------------------------------- rate limit / breaker */
+
+export interface BreakerSnapshot {
+  state: 'closed' | 'open';
+  consecutiveFailures: number;
+  lastFailureCode: string | null;
+  lastFailureAt: string | null;
+  /** The consecutive-failure count at which the breaker opens. */
+  threshold: number;
+}
+
+export interface RateLimitReport {
+  throttle: {
+    currentlyAvailable: number | null;
+    maximumAvailable: number | null;
+    restoreRate: number | null;
+    availablePercentage: number | null;
+    lastRequestedQueryCost: number | null;
+    lastActualQueryCost: number | null;
+  } | null;
+  breaker: BreakerSnapshot;
+  /** Where the numbers came from - never a live probe of Shopify. */
+  source: 'last-shopify-response' | 'none';
+  note: string;
+}
+
+/* ----------------------------------------------------------- automation ---- */
+
+/**
+ * The apply lock holder, reported by GET /api/automation/status as `activeRun`.
+ * Null when no run is in progress.
+ */
+export interface ActiveAutomationRun {
+  startedAt: string;
+  trigger: string;
+  requestId: string | null;
+}
+
+/** GET /api/automation/status - the fields the console reads for lock/breaker. */
+export interface AutomationStatus {
+  writesEnabled: boolean;
+  storeDomain: string;
+  activeRun: ActiveAutomationRun | null;
+  shopify: BreakerSnapshot;
+}
+
+/* -------------------------------------------------------------- version ---- */
+
+export interface VersionInfo {
+  version: string;
+  gitSha: string;
+  gitShaShort: string;
+  buildTime: string | null;
+  nodeVersion: string;
+  uptimeSeconds: number;
+  startedAt: string;
+}
+
+/* ------------------------------------------------ automation preview token -- */
+
+/**
+ * The single-use preview token from POST /api/automation/preview (in the response
+ * `meta.preview`). Sent back as `previewId` on apply so the server can prove the
+ * applied plan is the one that was reviewed, and reject it as PREVIEW_STALE
+ * otherwise.
+ */
+export interface PreviewToken {
+  previewId: string;
+  rulesHash: string;
+  planHash: string;
+  storeDomain: string;
+  generatedAt: string;
+  expiresAt: string;
 }
