@@ -911,3 +911,250 @@ export interface PreviewToken {
   generatedAt: string;
   expiresAt: string;
 }
+
+
+/* ===========================================================================
+ * Dropshipping operations
+ *
+ * Mirrors src/dropshipping/* on the backend. The shapes are deliberately
+ * verbose about CONFIDENCE, because the whole point of this module is that an
+ * unknown cost is not zero and a total with gaps is not a measurement.
+ * ======================================================================== */
+
+/**
+ * How much a figure can be trusted.
+ *
+ *   KNOWN      observed - Shopify told us, or an operator recorded it
+ *   ESTIMATED  derived from a configured rule or percentage, not observed
+ *   UNKNOWN    genuinely absent. NEVER render as 0.
+ */
+export type DataConfidence = 'KNOWN' | 'ESTIMATED' | 'UNKNOWN';
+
+/** A single monetary figure that always states how much it can be trusted. */
+export interface Figure {
+  /** Null if and only if confidence is UNKNOWN. */
+  amount: number | null;
+  currencyCode: string | null;
+  confidence: DataConfidence;
+  /** Plain-language provenance. Always populated - show it, do not invent one. */
+  source: string;
+}
+
+/**
+ * A total across several orders, honest about coverage.
+ *
+ * `amount` is never null: with nothing to include it is a genuine zero across zero
+ * orders, which `ordersIncluded: 0` disambiguates. When `ordersExcluded > 0` the
+ * total is a LOWER BOUND, not a measurement.
+ */
+export interface Aggregate {
+  amount: number;
+  currencyCode: string | null;
+  confidence: DataConfidence;
+  ordersIncluded: number;
+  /** Left out because unknown or in another currency. Their value is NOT zero. */
+  ordersExcluded: number;
+  source: string;
+}
+
+/**
+ * Where an order is. `normalizedStatus` reports PROGRESS and never returns
+ * DELAYED - lateness is orthogonal and lives on `delayed`. `displayState` on the
+ * order is the single collapsed value for a compact badge.
+ */
+export type DropshipFulfillmentState =
+  | 'ORDER_RECEIVED'
+  | 'AWAITING_SUPPLIER'
+  | 'SUPPLIER_PROCESSING'
+  | 'FULFILLED'
+  | 'LABEL_CREATED'
+  | 'CARRIER_PICKED_UP'
+  | 'IN_TRANSIT'
+  | 'OUT_FOR_DELIVERY'
+  | 'DELIVERED'
+  | 'DELAYED'
+  | 'DELIVERY_FAILED'
+  | 'CANCELLED'
+  | 'UNKNOWN';
+
+export interface ShipmentTracking {
+  company: string | null;
+  number: string | null;
+  url: string | null;
+}
+
+export interface ShipmentEvent {
+  status: string | null;
+  happenedAt: string | null;
+  message: string | null;
+}
+
+export interface DropshipShipment {
+  normalizedStatus: DropshipFulfillmentState;
+  /** Shopify's own words, always retained so a normalisation can be checked. */
+  rawShopifyStatus: {
+    orderFulfillmentStatus: string | null;
+    fulfillmentDisplayStatuses: (string | null)[];
+  };
+  carrier: string | null;
+  trackingNumbers: string[];
+  trackingUrls: string[];
+  tracking: ShipmentTracking[];
+  estimatedDeliveryAt: string | null;
+  inTransitAt: string | null;
+  deliveredAt: string | null;
+  events: ShipmentEvent[];
+  /** Orthogonal to normalizedStatus: an order can be in transit AND late. */
+  delayed: boolean;
+  delaySignals: string[];
+  /** Not the same as "not shipped" - a dispatched order can lack tracking. */
+  hasTracking: boolean;
+}
+
+/**
+ * One order's money.
+ *
+ * landedCost is what the SUPPLIER is owed (goods + shipping) and is the basis of
+ * capital exposure. commercialCost adds fees and allowances and is the basis of
+ * contribution. They are separate on purpose - conflating them makes a margin look
+ * healthy while the order loses money.
+ */
+export interface OrderEconomics {
+  currencyCode: string | null;
+  customerRevenue: Figure;
+  supplierProductCost: Figure;
+  supplierShippingCost: Figure;
+  supplierFulfillmentCost: Figure;
+  paymentFees: Figure;
+  shopifyFees: Figure;
+  advertisingAllowance: Figure;
+  otherCommercialCosts: Figure;
+  landedCost: Figure;
+  commercialCost: Figure;
+  estimatedProfit: Figure;
+  estimatedMargin: { value: number | null; confidence: DataConfidence };
+  confidence: DataConfidence;
+  /** Which inputs are missing, so "unknown" is explainable. */
+  missingInputs: string[];
+  warnings: string[];
+}
+
+export interface DropshipOrderItem {
+  shopifyLineItemId: string;
+  title: string;
+  quantity: number;
+  sku: string | null;
+  shopifyProductId: string | null;
+  shopifyVariantId: string | null;
+  lineRevenue: number | null;
+  unitCost: number | null;
+  /** Which cost source won, in plain language. */
+  unitCostSource: string;
+  /** Null means UNKNOWN, never free. */
+  unitShippingCost: number | null;
+  supplier: SupplierClassification;
+  supplierEvidence: string[];
+  fulfillmentService: string | null;
+}
+
+export interface DropshipOrder {
+  shopifyOrderId: string;
+  orderName: string;
+  createdAt: string;
+  paymentStatus: string | null;
+  fulfillmentStatus: string | null;
+  /** TRADELLE only where evidence exists. */
+  supplier: SupplierClassification;
+  supplierEvidence: string[];
+  items: DropshipOrderItem[];
+  /** Null when protected customer data is not approved - WITHHELD, not absent. */
+  customerRegion: {
+    countryCode: string | null;
+    country: string | null;
+    provinceCode: string | null;
+    province: string | null;
+    city: string | null;
+  } | null;
+  economics: OrderEconomics;
+  shipment: DropshipShipment;
+  /** DELAYED when late, else the progress state. For a single badge. */
+  displayState: DropshipFulfillmentState;
+  warnings: string[];
+}
+
+export interface DropshipStateCounts {
+  awaitingFulfillment: number;
+  processing: number;
+  shipped: number;
+  inTransit: number;
+  outForDelivery: number;
+  delivered: number;
+  deliveryFailed: number;
+  cancelled: number;
+  unknown: number;
+  /** Deliberately overlaps the progress buckets above. */
+  delayed: number;
+}
+
+export interface AttentionBucket {
+  code: string;
+  label: string;
+  /** What a human should do. Never performed automatically. */
+  action: string;
+  severity: 'critical' | 'warning' | 'info';
+  count: number;
+  examples: { shopifyOrderId: string; orderName: string }[];
+}
+
+/** "How much cash do I need available to keep these orders moving?" */
+export interface CapitalExposure {
+  paidCustomerOrders: Aggregate;
+  /** Landed cost of paid, non-cancelled orders - the total supplier bill. */
+  supplierCommitments: Aggregate;
+  alreadyFulfilled: Aggregate;
+  /** Committed but not yet dispatched: the cash still required. */
+  outstanding: Aggregate;
+  /** Paid orders in NONE of the totals above, because their cost is unknown. */
+  ordersWithUnknownCost: number;
+  warnings: string[];
+}
+
+export interface DropshipDashboard {
+  currencyCode: string | null;
+  generatedAt: string;
+  ordersConsidered: number;
+  ordersToday: number;
+  ordersThisWeek: number;
+  counts: DropshipStateCounts;
+  revenue: Aggregate;
+  /** Landed cost: what suppliers are owed. */
+  supplierCost: Aggregate;
+  /** Commercial cost: landed + fees + allowances. */
+  commercialCost: Aggregate;
+  estimatedProfit: Aggregate;
+  estimatedMarginPercentage: number | null;
+  exposure: CapitalExposure;
+  attention: AttentionBucket[];
+  warnings: string[];
+}
+
+/** GET /api/dropshipping/settings - the thresholds the figures were computed with. */
+export interface DropshipSettings {
+  cost: {
+    includeSupplierShipping: boolean;
+    includePaymentFees: boolean;
+    includeShopifyFees: boolean;
+    includeAdvertisingAllowance: boolean;
+    paymentFeePercentage: number;
+    shopifyFeePercentage: number;
+    advertisingAllowancePercentage: number;
+    otherCommercialCostPerOrder: number;
+    minimumMarginPercentage: number;
+    minimumProfitAmount: number;
+  };
+  sla: {
+    processingWarningHours: number;
+    trackingWarningHours: number;
+    deliveryDelayDays: number;
+  };
+}

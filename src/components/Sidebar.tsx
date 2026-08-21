@@ -23,6 +23,9 @@ const NAV_ITEMS: NavItem[] = [
   // gate is worthless if nobody can find the queue it feeds.
   { href: '/products/review', label: 'Review queue', icon: '⚑' },
   { href: '/orders', label: 'Orders', icon: '⇄' },
+  // Sits under Orders: it is the same Shopify orders, viewed through cost,
+  // fulfillment state and supplier cash exposure rather than as raw records.
+  { href: '/dropshipping', label: 'Dropshipping', icon: '⛟' },
   { href: '/customers', label: 'Customers', icon: '☺' },
   { href: '/analytics', label: 'Analytics', icon: '◔' },
   { href: '/pricing', label: 'Pricing', icon: '%' },

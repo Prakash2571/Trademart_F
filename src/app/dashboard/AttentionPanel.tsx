@@ -26,6 +26,7 @@ import { Badge, Callout, Card } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { formatNumber } from '@/lib/format';
 import type {
+  DropshipDashboard,
   IntegrityReport,
   ProductDto,
   WebhookEventsResponse,
@@ -55,6 +56,10 @@ export function AttentionPanel() {
     `/shopify/products?limit=50&query=${encodeURIComponent(`tag:'${REVIEW_TAG}'`)}`,
   );
   const integrity = useApi<IntegrityReport>('/diagnostics/integrity');
+  // A small window: this is a landing-page summary, and a 250-order scan on every
+  // dashboard load would cost several Shopify pages for numbers nobody drills into
+  // from here.
+  const dropshipping = useApi<DropshipDashboard>('/dropshipping/dashboard?limit=50');
   const webhooks = useApi<WebhookEventsResponse>('/webhooks/events?status=FAILED&limit=1');
 
   const items: AttentionItem[] = [];
@@ -91,6 +96,53 @@ export function AttentionPanel() {
       href: '/products/review',
       tone: 'warning',
       detail: 'Automation will refuse to price these. Enter a cost, or set Cost per item.',
+    });
+  }
+
+  // ---- Dropshipping operations --------------------------------------------
+  //
+  // The backend already decides what needs attention and why, with an action for
+  // each. Re-deriving those rules here would give the dashboard a second opinion
+  // about whether an order is late, so this only PROMOTES the buckets that belong on
+  // a landing page and links through for the rest.
+  const promoted = new Set([
+    'FAILED_FULFILLMENT',
+    'NEGATIVE_MARGIN',
+    'DELAYED',
+    'NO_TRACKING',
+    'UNKNOWN_SUPPLIER_COST',
+  ]);
+  for (const bucket of dropshipping.data?.attention ?? []) {
+    if (!promoted.has(bucket.code)) continue;
+    items.push({
+      key: `ds-${bucket.code}`,
+      count: bucket.count,
+      label: bucket.label.toLowerCase(),
+      href: '/dropshipping',
+      tone:
+        bucket.severity === 'critical'
+          ? 'danger'
+          : bucket.severity === 'warning'
+            ? 'warning'
+            : 'info',
+      detail: bucket.action,
+    });
+  }
+
+  // Supplier cash exposure is a headline number rather than a count, so it is shown
+  // only when there is money outstanding AND the figure is complete enough to act on.
+  const exposure = dropshipping.data?.exposure ?? null;
+  if (exposure !== null && exposure.outstanding.amount > 0) {
+    items.push({
+      key: 'ds-exposure',
+      count: exposure.outstanding.amount,
+      label: `${dropshipping.data?.currencyCode ?? ''} outstanding supplier exposure`.trim(),
+      href: '/dropshipping',
+      tone: 'info',
+      detail:
+        exposure.ordersWithUnknownCost > 0
+          ? `Cash still needed to fulfil paid orders. ${exposure.ordersWithUnknownCost} paid order(s) have no known cost, so the real figure is higher.`
+          : 'Cash still needed to fulfil paid orders that suppliers have not yet dispatched.',
     });
   }
 
