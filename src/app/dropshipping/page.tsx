@@ -86,6 +86,17 @@ export default function DropshippingPage() {
             >
               Refresh
             </button>
+            {/*
+              This dashboard is a WINDOW over recent orders. Without these links the only
+              route to a specific order was a Needs Attention example, so an order that
+              was not flagged could not be reached at all.
+            */}
+            <Link className="btn btn--sm" href="/dropshipping/orders">
+              All orders
+            </Link>
+            <Link className="btn btn--sm" href="/dropshipping/settings">
+              Settings
+            </Link>
           </div>
         }
       />
