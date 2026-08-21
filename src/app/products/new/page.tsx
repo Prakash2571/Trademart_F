@@ -3,22 +3,43 @@
 /**
  * Create a product.
  *
- * Posts to POST /api/shopify/products, which creates the product and then its
- * variants. DRAFT is the default and publishing is a deliberate, separate
- * choice - a newly created product must not appear on the storefront because
- * someone was clicking through a form.
+ * Posts to POST /api/shopify/products.
+ *
+ * STATUS AND PUBLICATION ARE SEPARATE FIELDS, because they are separate things.
+ * `status: 'ACTIVE'` does NOT make a product visible - a product can be ACTIVE and
+ * published to no sales channel, or published while DRAFT, and both are invisible.
+ * So this form sends `{ status, publish }` and the backend does:
+ *
+ *     create as DRAFT -> variants -> publish -> VERIFY -> set ACTIVE -> VERIFY
+ *
+ * If publication fails the product is deliberately left as a DRAFT and the
+ * response is HTTP 207 with `partialSuccess` and warnings. This page reports that
+ * honestly instead of showing a success screen, and it never claims customers can
+ * see the product unless `visibleToCustomers` came back true.
  *
  * A stepped layout keeps the decisions in a sensible order (identity, then
  * options, then priced variants, then media) and ends on a preview of the exact
  * request body, so nothing is sent that the operator has not seen.
+ *
+ * DRAFT PERSISTENCE: the form autosaves to localStorage, because this wizard
+ * takes real time to fill in and a refresh used to discard all of it. Only the
+ * product fields are stored - never a token, a session or a cost credential.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { Badge, Callout, Card, PageHeader } from '@/components/ui';
-import { ApiError, apiPost, apiPut } from '@/lib/api';
-import type { ProductDto } from '@/lib/types';
+import {
+  Badge,
+  Callout,
+  Card,
+  ErrorCallout,
+  PageHeader,
+  VisibilityBadge,
+} from '@/components/ui';
+import { ApiError, apiPost, apiPut, newIdempotencyKey } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import type { ProductCreateResult } from '@/lib/types';
 
 interface OptionDraft {
   name: string;
@@ -57,6 +78,78 @@ function emptyVariant(optionCount: number): VariantDraft {
   };
 }
 
+/* ------------------------------------------------------- draft persistence -- */
+
+/**
+ * localStorage key for the in-progress product form.
+ *
+ * Versioned so a future change to the draft shape cannot resurrect a stale
+ * structure into a form that no longer matches it.
+ */
+const DRAFT_KEY = 'trademart:product-draft:v1';
+
+/**
+ * The subset of the form that is saved.
+ *
+ * ONLY product fields. Deliberately no session, no CSRF token, no API key and no
+ * operator identity - localStorage is readable by any script on the origin, so
+ * nothing sensitive belongs in it. Everything here is data the operator typed and
+ * is about to send to Shopify anyway.
+ */
+interface ProductDraft {
+  savedAt: string;
+  title: string;
+  descriptionHtml: string;
+  vendor: string;
+  productType: string;
+  tags: string;
+  publish: boolean;
+  options: OptionDraft[];
+  variants: VariantDraft[];
+  currency: string;
+  mediaUrls: string;
+}
+
+function readDraft(): ProductDraft | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(DRAFT_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as Partial<ProductDraft>;
+    // Only offer a restore when there is something worth restoring.
+    if (typeof parsed.title !== 'string' || !Array.isArray(parsed.variants)) return null;
+    if (parsed.title.trim().length === 0 && parsed.variants.length <= 1) return null;
+    return {
+      savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : '',
+      title: parsed.title,
+      descriptionHtml: parsed.descriptionHtml ?? '',
+      vendor: parsed.vendor ?? '',
+      productType: parsed.productType ?? '',
+      tags: parsed.tags ?? '',
+      // Publication intent is deliberately NOT restored as true. Recovering a
+      // draft should never carry a "make this live" decision the operator has
+      // forgotten they made.
+      publish: false,
+      options: Array.isArray(parsed.options) ? parsed.options : [],
+      variants: parsed.variants as VariantDraft[],
+      currency: parsed.currency ?? 'GBP',
+      mediaUrls: parsed.mediaUrls ?? '',
+    };
+  } catch {
+    // Corrupt draft: discard rather than fail the page.
+    return null;
+  }
+}
+
+function clearDraft(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // A full or blocked localStorage must not break the form.
+  }
+}
+
 export default function NewProductPage() {
   return (
     <>
@@ -87,7 +180,49 @@ function NewProductWizard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [costWarning, setCostWarning] = useState<string | null>(null);
-  const [created, setCreated] = useState<ProductDto | null>(null);
+  const [created, setCreated] = useState<ProductCreateResult | null>(null);
+
+  /** A recovered draft, offered but not applied until the operator asks. */
+  const [recoverable, setRecoverable] = useState<ProductDraft | null>(null);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+
+  /**
+   * Idempotency key for THIS submission.
+   *
+   * Generated once per mounted form, so pressing Create twice - or retrying after
+   * a dropped response - reuses the same key and the backend replays the first
+   * outcome rather than creating a second product. A fresh key per click would
+   * provide no protection at all.
+   */
+  const submissionKeyRef = useRef<string>(newIdempotencyKey());
+
+  // Offer a recovered draft on mount. Never applied automatically: silently
+  // repopulating a form is disorienting, and the operator may have deliberately
+  // started fresh.
+  useEffect(() => {
+    const draft = readDraft();
+    if (draft !== null) setRecoverable(draft);
+  }, []);
+
+  const restoreDraft = useCallback(() => {
+    if (recoverable === null) return;
+    setTitle(recoverable.title);
+    setDescription(recoverable.descriptionHtml);
+    setVendor(recoverable.vendor);
+    setProductType(recoverable.productType);
+    setTags(recoverable.tags);
+    setOptions(recoverable.options);
+    setVariants(recoverable.variants.length > 0 ? recoverable.variants : [emptyVariant(0)]);
+    setCurrency(recoverable.currency);
+    setMediaUrls(recoverable.mediaUrls);
+    setRecoverable(null);
+  }, [recoverable]);
+
+  const discardDraft = useCallback(() => {
+    clearDraft();
+    setRecoverable(null);
+    setDraftSavedAt(null);
+  }, []);
 
   const parsedOptions = useMemo(
     () =>
@@ -110,8 +245,11 @@ function NewProductWizard() {
       ...(descriptionHtml.trim().length > 0 ? { descriptionHtml } : {}),
       ...(vendor.trim().length > 0 ? { vendor: vendor.trim() } : {}),
       ...(productType.trim().length > 0 ? { productType: productType.trim() } : {}),
-      // DRAFT unless explicitly published.
+      // Two independent fields. `status` is the DESIRED end status and `publish`
+      // is the storefront intent; the backend grants each only after verifying
+      // the preceding step. Sending status:'ACTIVE' alone would NOT publish.
       status: publish ? 'ACTIVE' : 'DRAFT',
+      publish,
       tags: tags
         .split(',')
         .map((tag) => tag.trim())
@@ -151,22 +289,110 @@ function NewProductWizard() {
   const pricedVariants = requestBody.variants.length;
   const canSubmit = title.trim().length > 0 && pricedVariants > 0 && !busy;
 
+  /**
+   * Autosave, debounced.
+   *
+   * Debounced rather than saved on every keystroke so typing a description does
+   * not write to localStorage on every character. Skipped once the product has
+   * been created - at that point the draft is finished business.
+   */
+  useEffect(() => {
+    if (created !== null) return;
+    if (typeof window === 'undefined') return;
+    // Nothing worth saving yet, and writing an empty draft would make the
+    // restore prompt appear for no reason on the next visit.
+    if (title.trim().length === 0 && variants.length <= 1 && mediaUrls.trim().length === 0) return;
+
+    const timer = setTimeout(() => {
+      const draft: ProductDraft = {
+        savedAt: new Date().toISOString(),
+        title,
+        descriptionHtml,
+        vendor,
+        productType,
+        tags,
+        publish,
+        options,
+        variants,
+        currency,
+        mediaUrls,
+      };
+      try {
+        window.localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+        setDraftSavedAt(draft.savedAt);
+      } catch {
+        // Quota exceeded or storage disabled. The form still works; it just will
+        // not survive a refresh, which is the pre-existing behaviour.
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [
+    created,
+    title,
+    descriptionHtml,
+    vendor,
+    productType,
+    tags,
+    publish,
+    options,
+    variants,
+    currency,
+    mediaUrls,
+  ]);
+
+  /**
+   * Warn before leaving with unsaved work.
+   *
+   * The draft is autosaved, so this is a second line of defence for the case
+   * where localStorage is unavailable - and a useful signal regardless.
+   */
+  useEffect(() => {
+    if (created !== null) return;
+    const dirty = title.trim().length > 0 || pricedVariants > 0;
+    if (!dirty) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Browsers ignore custom text now, but returnValue must be set for the
+      // native prompt to appear at all.
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [created, title, pricedVariants]);
+
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
     setError(null);
     setCostWarning(null);
     try {
-      const response = await apiPost<ProductDto>('/shopify/products', requestBody);
+      // A stable idempotency key per submission attempt sequence: if the response
+      // is lost and the operator presses Create again, the backend replays the
+      // original result instead of creating a second product.
+      const response = await apiPost<ProductCreateResult>(
+        '/shopify/products',
+        requestBody,
+        { idempotencyKey: submissionKeyRef.current },
+      );
       const product = response.data;
       setCreated(product);
+      // The wizard's work is done; a leftover draft would prompt a pointless
+      // restore next time.
+      clearDraft();
+      setDraftSavedAt(null);
 
       // Manual costs are a separate concern (/api/costs), so they are recorded
       // after creation. A failure here must NOT read as "product creation
       // failed" - the product exists either way.
-      const withCost = variants.filter(
-        (variant) => variant.price.trim().length > 0 && variant.manualCost.trim().length > 0,
-      );
+      // Do not attach costs to a product whose variants failed - the prices are
+      // not the ones the operator entered, so a cost against them would be wrong.
+      const withCost =
+        product.variantsCreated === 0
+          ? []
+          : variants.filter(
+              (variant) =>
+                variant.price.trim().length > 0 && variant.manualCost.trim().length > 0,
+            );
       if (withCost.length > 0) {
         const failures: string[] = [];
         for (let index = 0; index < withCost.length; index += 1) {
@@ -176,7 +402,11 @@ function NewProductWizard() {
             failures.push(`variant ${index + 1}: cost must be greater than zero`);
             continue;
           }
-          const variantId = product.variants[index]?.shopifyVariantId ?? null;
+          // ProductCreateResult reports how many variants were created but not
+          // their ids, so the cost is attached at PRODUCT level. A product-level
+          // cost applies to every variant, which is the right default here and is
+          // adjustable per variant from the product page.
+          const variantId = null;
           try {
             await apiPut<unknown>('/costs', {
               productId: product.shopifyProductId,
@@ -207,13 +437,63 @@ function NewProductWizard() {
 
   if (created !== null) {
     return (
-      <Card title="Product created">
+      <Card title={created.partialSuccess ? 'Product created, with problems' : 'Product created'}>
         <div className="stack">
-          <Callout tone="info" title={`Created as ${created.status}`}>
+          {/*
+            Visibility is stated ONLY from created.visibleToCustomers, which the
+            backend sets from a verified read of both the status and the Online
+            Store publication. Inferring it from status here is exactly the bug
+            this whole flow was rebuilt to remove.
+          */}
+          <Callout
+            tone={created.visibleToCustomers ? 'success' : created.partialSuccess ? 'warning' : 'info'}
+            title={
+              created.visibleToCustomers
+                ? 'Live: customers can see this product'
+                : `Created as ${created.status} — NOT visible to customers`
+            }
+          >
             <strong>{created.title}</strong> now exists in Shopify.
-            {created.status !== 'ACTIVE' &&
-              ' It is not visible to customers until you publish it.'}
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              <Badge tone={created.status === 'ACTIVE' ? 'success' : 'neutral'}>
+                status {created.status}
+              </Badge>
+              <VisibilityBadge
+                status={created.status}
+                publishedToOnlineStore={
+                  created.publication.requested ? created.publication.published : null
+                }
+              />
+              <Badge tone="neutral">{created.variantsCreated} variant(s)</Badge>
+              {created.mediaAttached > 0 && (
+                <Badge tone="neutral">{created.mediaAttached} image(s)</Badge>
+              )}
+            </div>
+            {created.desiredStatus !== created.status && (
+              <p className="muted" style={{ marginTop: 8, marginBottom: 0 }}>
+                You asked for <span className="mono">{created.desiredStatus}</span> but Shopify
+                reports <span className="mono">{created.status}</span>.
+              </p>
+            )}
           </Callout>
+
+          {created.warnings.length > 0 && (
+            <Callout tone="warning" title="Not everything completed">
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {created.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+              {created.publication.requested && !created.publication.published && (
+                <p style={{ marginBottom: 0, marginTop: 8 }}>
+                  The product was left as a <strong>DRAFT</strong> on purpose, so nothing
+                  half-finished is on sale. Publish it from the product page once the cause is
+                  fixed.
+                </p>
+              )}
+            </Callout>
+          )}
+
           {costWarning !== null && (
             <Callout tone="warning" title="Manual costs incomplete">
               {costWarning}
@@ -253,11 +533,25 @@ function NewProductWizard() {
         </div>
       </Card>
 
-      {error !== null && (
-        <Callout tone="danger" title={error.code}>
-          {error.message}
+      {recoverable !== null && (
+        <Callout tone="info" title="An unfinished product was recovered">
+          You have a draft saved
+          {recoverable.savedAt.length > 0 ? ` from ${formatDateTime(recoverable.savedAt)}` : ''}
+          {recoverable.title.trim().length > 0 ? `: "${recoverable.title.trim()}"` : ''}. Restoring
+          fills this form back in. Publication is not restored - you will be asked again before
+          anything goes live.
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <button className="btn btn--sm btn--primary" onClick={restoreDraft}>
+              Restore draft
+            </button>
+            <button className="btn btn--sm" onClick={discardDraft}>
+              Discard it
+            </button>
+          </div>
         </Callout>
       )}
+
+      {error !== null && <ErrorCallout error={error} />}
 
       {step === 0 && (
         <Card title="1. Product">

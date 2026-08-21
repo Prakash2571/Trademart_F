@@ -9,21 +9,30 @@
  *
  * Flow is deliberate and ENFORCED: edit -> Save -> Preview -> Apply.
  *
- * Apply is disabled until a preview has SUCCEEDED against the currently saved
- * rules and the currently connected store. Saving rules, a failed preview, or a
- * completed apply all close the gate again. writesEnabled alone is not enough -
- * that flag only says the backend is permitted to write, not that a human has
- * read what would happen.
+ * THE GATE IS SERVER-SIDE. A preview returns a single-use `previewId` bound to
+ * the exact action plan the operator is shown; apply must send it back. The
+ * backend rebuilds the plan from current Shopify data, compares its fingerprint,
+ * and refuses with PREVIEW_STALE if anything moved - so a preview showing
+ * £20 -> £25 can never apply £18 -> £23.
  *
- * Preview and Apply both operate on the SAVED rules, so you never "preview X but
- * apply Y". Webhook-triggered runs use the same saved rules.
+ * This page's own disabled-button logic is therefore a CONVENIENCE, not the
+ * control. It exists so the operator learns why apply is unavailable without
+ * having to submit and read an error. Removing it would not make an unreviewed
+ * apply possible; the backend would still refuse.
  *
  * All numbers/logic come from the backend; this page only renders and posts.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { Badge, Callout, Card, PageHeader, Modal } from '@/components/ui';
+import {
+  Badge,
+  Callout,
+  Card,
+  ConfirmDialog,
+  ErrorCallout,
+  PageHeader,
+} from '@/components/ui';
 import { DataTable, type Column } from '@/components/DataTable';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPost, apiPut } from '@/lib/api';
@@ -50,42 +59,22 @@ export default function AutomationPage() {
 }
 
 /**
- * A successful preview, tied to the exact state it was taken against.
+ * A successful preview, plus the server token that authorises applying it.
  *
- * Apply is gated on this rather than on writesEnabled alone. writesEnabled only
- * says the backend is *permitted* to write; it says nothing about whether anyone
- * has looked at what would happen. Applying blind to a live storefront is the
- * expensive mistake this page exists to prevent.
+ * `previewId` is the important field: it is what the backend validates. The rest
+ * is kept so the page can explain the state of the gate and show a countdown to
+ * expiry without another round trip.
  */
 interface PreviewGate {
   report: AutomationReport;
-  /** Fingerprint of the saved rules the preview ran against. */
-  rulesFingerprint: string;
+  /** Single-use token from the backend. Null when the backend could not issue one. */
+  previewId: string | null;
+  /** When the token stops being valid, ISO 8601. */
+  expiresAt: string | null;
+  /** Fingerprint of the action plan, computed by the backend. */
+  planHash: string;
   /** Guards against previewing one store and applying to another. */
   shopDomain: string;
-}
-
-/**
- * Order-independent fingerprint of a rule set.
- *
- * JSON.stringify alone is not safe here: key order follows insertion order, so
- * two identical rule sets could fingerprint differently after a round trip
- * through the API and spuriously invalidate a valid preview.
- */
-function fingerprintRules(rules: AutomationRules | null): string {
-  if (rules === null) return '';
-  const stable = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(stable);
-    if (value !== null && typeof value === 'object') {
-      return Object.fromEntries(
-        Object.keys(value as Record<string, unknown>)
-          .sort()
-          .map((key) => [key, stable((value as Record<string, unknown>)[key])]),
-      );
-    }
-    return value;
-  };
-  return JSON.stringify(stable(rules));
 }
 
 function AutomationConsole() {
@@ -100,7 +89,6 @@ function AutomationConsole() {
 
   const writesEnabled = status.data?.writesEnabled ?? false;
   const storeDomain = status.data?.storeDomain ?? '';
-  const savedFingerprint = fingerprintRules(rules.data?.effective ?? null);
 
   return (
     <div className="stack">
@@ -117,7 +105,6 @@ function AutomationConsole() {
       <RunControls
         writesEnabled={writesEnabled}
         gate={gate}
-        savedFingerprint={savedFingerprint}
         storeDomain={storeDomain}
         onPreviewed={setGate}
         onApplied={() => {
@@ -534,14 +521,12 @@ function RuleEditor({
 function RunControls({
   writesEnabled,
   gate,
-  savedFingerprint,
   storeDomain,
   onPreviewed,
   onApplied,
 }: {
   writesEnabled: boolean;
   gate: PreviewGate | null;
-  savedFingerprint: string;
   storeDomain: string;
   onPreviewed: (gate: PreviewGate | null) => void;
   onApplied: () => void;
@@ -549,12 +534,28 @@ function RunControls({
   const [busy, setBusy] = useState<'preview' | 'apply' | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Ticks only while a preview is open, so the expiry countdown stays honest.
+  // A preview that silently lapsed while the operator read it would otherwise
+  // present as a confusing PREVIEW_EXPIRED on apply.
+  useEffect(() => {
+    if (gate?.expiresAt === null || gate === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [gate]);
+
+  const secondsLeft =
+    gate?.expiresAt == null
+      ? null
+      : Math.max(0, Math.round((new Date(gate.expiresAt).getTime() - now) / 1000));
 
   /**
    * Why Apply is unavailable, or null when it is available.
    *
-   * Returned as a sentence rather than a boolean so the button can explain
-   * itself - a disabled control with no reason is its own support ticket.
+   * A sentence rather than a boolean so the button can explain itself - a
+   * disabled control with no reason is its own support ticket. Note this mirrors
+   * the backend's checks for the operator's benefit; it does not replace them.
    */
   const blockedReason = ((): string | null => {
     if (!writesEnabled) {
@@ -563,38 +564,70 @@ function RunControls({
     if (gate === null) {
       return 'Run a preview first. Apply stays disabled until a preview succeeds.';
     }
-    if (gate.rulesFingerprint !== savedFingerprint) {
-      return 'The rules changed after this preview. Preview again to see what the new rules would do.';
+    if (gate.previewId === null) {
+      return 'This preview could not be recorded by the backend, so it cannot be applied. Check the database connection and preview again.';
+    }
+    if (secondsLeft !== null && secondsLeft <= 0) {
+      return 'This preview has expired. Preview again to see the current plan.';
     }
     if (storeDomain !== '' && gate.shopDomain !== storeDomain) {
       return `The preview ran against ${gate.shopDomain}, but the backend is now connected to ${storeDomain}. Preview again.`;
+    }
+    if (gate.report.summary.priceChanges + gate.report.summary.visibilityChanges === 0) {
+      return 'The preview found nothing to change, so there is nothing to apply.';
     }
     return null;
   })();
 
   const canApply = blockedReason === null && busy === null;
 
-  const run = async (mode: 'preview' | 'apply') => {
-    setBusy(mode);
+  const preview = async () => {
+    setBusy('preview');
     setError(null);
     try {
-      const path = mode === 'preview' ? '/automation/preview' : '/automation/apply';
-      const response = await apiPost<AutomationReport>(path, {});
-      if (mode === 'preview') {
-        // Bind the preview to the state it was taken against.
-        onPreviewed({
-          report: response.data,
-          rulesFingerprint: fingerprintRules(response.data.rules),
-          shopDomain: response.data.shopDomain,
-        });
-      } else {
-        onPreviewed(null);
-        onApplied();
-      }
+      const response = await apiPost<AutomationReport>('/automation/preview', {});
+      onPreviewed({
+        report: response.data,
+        previewId: response.data.preview?.previewId ?? null,
+        expiresAt: response.data.preview?.expiresAt ?? null,
+        planHash: response.data.planHash,
+        shopDomain: response.data.shopDomain,
+      });
+      setNow(Date.now());
     } catch (caught) {
       // A failed preview must not leave a previous successful one in place.
-      if (mode === 'preview') onPreviewed(null);
-      setError(caught instanceof ApiError ? caught : new ApiError('UNKNOWN', 'Run failed.', 0));
+      onPreviewed(null);
+      setError(
+        caught instanceof ApiError ? caught : new ApiError('UNKNOWN', 'Preview failed.', 0),
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const apply = async () => {
+    if (gate?.previewId == null) return;
+    setBusy('apply');
+    setError(null);
+    try {
+      // previewId is what makes this apply legal. The backend re-derives the plan
+      // and refuses if it no longer matches what this preview described.
+      await apiPost<AutomationReport>(
+        '/automation/apply',
+        { previewId: gate.previewId },
+        // A stable key for this one apply, so a retry after a dropped response
+        // returns the original outcome instead of attempting the work twice.
+        { idempotencyKey: `apply-${gate.previewId}` },
+      );
+      onPreviewed(null);
+      onApplied();
+    } catch (caught) {
+      const apiError =
+        caught instanceof ApiError ? caught : new ApiError('UNKNOWN', 'Apply failed.', 0);
+      // A stale/expired/consumed preview is spent either way - clear the gate so
+      // the only available action is to preview again.
+      if (apiError.isStaleStateProblem) onPreviewed(null);
+      setError(apiError);
     } finally {
       setBusy(null);
       setConfirmOpen(false);
@@ -602,13 +635,14 @@ function RunControls({
   };
 
   const report = gate?.report ?? null;
+  const summary = report?.summary ?? null;
 
   return (
     <Card
       title="Preview & apply"
       actions={
         <div className="row" style={{ gap: 8 }}>
-          <button className="btn btn--sm" onClick={() => run('preview')} disabled={busy !== null}>
+          <button className="btn btn--sm" onClick={preview} disabled={busy !== null}>
             {busy === 'preview' ? 'Previewing…' : 'Preview'}
           </button>
           <button
@@ -624,15 +658,33 @@ function RunControls({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} onRetry={preview} onRefresh={preview} />
         )}
-        {blockedReason !== null && (
+        {blockedReason !== null && error === null && (
           <Callout tone={writesEnabled ? 'warning' : 'info'} title="Apply is disabled">
             {blockedReason}
           </Callout>
         )}
+
+        {gate !== null && gate.previewId !== null && secondsLeft !== null && (
+          <Callout
+            tone={secondsLeft <= 60 ? 'warning' : 'info'}
+            title={
+              secondsLeft <= 0
+                ? 'This preview has expired'
+                : `Preview valid for another ${formatCountdown(secondsLeft)}`
+            }
+          >
+            Applying will execute <strong>exactly</strong> the changes listed below, and nothing
+            else. If product or cost data changes in Shopify before you apply, the backend refuses
+            the apply rather than writing different values.
+            <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+              plan <span className="mono">{gate.planHash.slice(0, 12)}</span> · preview{' '}
+              <span className="mono">{gate.previewId.slice(0, 8)}</span> · single use
+            </div>
+          </Callout>
+        )}
+
         {report === null ? (
           <p className="muted">
             Preview reports exactly what would change and writes nothing. Read it before applying.
@@ -642,36 +694,41 @@ function RunControls({
         )}
       </div>
 
-      {confirmOpen && (
-        <Modal title="Apply automation to the live store?" onClose={() => setConfirmOpen(false)}>
-          <div className="stack">
-            <Callout tone="warning" title="This changes real products">
-              Prices and visibility on <span className="mono">{report?.shopDomain ?? 'the store'}</span>{' '}
-              will change according to the saved rules, exactly as listed in the preview above.
-              Customers see the result immediately.
-            </Callout>
-            <Callout tone="info" title="What is and is not recoverable">
-              Every applied action is recorded in audit history. There is no one-click
-              rollback: undoing a change means editing the affected products, so read the
-              preview before continuing.
-            </Callout>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn" onClick={() => setConfirmOpen(false)} disabled={busy !== null}>
-                Cancel
-              </button>
-              <button
-                className="btn btn--primary"
-                onClick={() => run('apply')}
-                disabled={busy !== null}
-              >
-                {busy === 'apply' ? 'Applying…' : 'Yes, apply now'}
-              </button>
-            </div>
-          </div>
-        </Modal>
+      {confirmOpen && report !== null && summary !== null && (
+        <ConfirmDialog
+          title="Apply automation to the live store?"
+          intent={`Apply ${formatNumber(summary.priceChanges)} price change(s) and ${formatNumber(
+            summary.visibilityChanges,
+          )} visibility change(s) to ${report.shopDomain}.`}
+          changes={[
+            { label: 'Price changes', to: formatNumber(summary.priceChanges) },
+            { label: 'Visibility changes', to: formatNumber(summary.visibilityChanges) },
+            { label: 'Skipped (no action)', to: formatNumber(summary.skipped) },
+            {
+              label: 'Plan fingerprint',
+              to: gate?.planHash.slice(0, 12) ?? '—',
+            },
+          ]}
+          consequence={
+            'Customers see the result immediately. Every applied action is recorded in audit history with its previous value, but there is no one-click rollback - undoing means editing the affected products. The backend will refuse this apply if the plan no longer matches the preview above.'
+          }
+          confirmLabel="Yes, apply now"
+          tone="warning"
+          busy={busy === 'apply'}
+          onConfirm={apply}
+          onCancel={() => setConfirmOpen(false)}
+        />
       )}
     </Card>
   );
+}
+
+/** mm:ss for short durations, so a countdown reads naturally. */
+function formatCountdown(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${String(rest).padStart(2, '0')}s`;
 }
 
 function ReportView({ report }: { report: AutomationReport }) {

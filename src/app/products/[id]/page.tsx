@@ -23,15 +23,27 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
-import { Badge, Callout, Card, ErrorState, Modal, PageHeader } from '@/components/ui';
+import {
+  Badge,
+  Callout,
+  Card,
+  ConfirmDialog,
+  ErrorCallout,
+  ErrorState,
+  Modal,
+  PageHeader,
+  VisibilityBadge,
+} from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
 import { formatDateTime, formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
+  InventorySetResult,
   LocationDto,
   ManualCostRecord,
   ProductDto,
+  ProductPublicationState,
   ProductVariantDto,
 } from '@/lib/types';
 
@@ -103,6 +115,11 @@ function ProductDetail({ productId }: { productId: string }) {
   return (
     <div className="stack">
       <SummaryCard product={data} />
+      {/*
+        Placed immediately after Details, because "is this visible?" is the question
+        an operator has while looking at the status field just above.
+      */}
+      <PublicationCard product={data} onChanged={refresh} />
       <DetailsEditor product={data} onSaved={refresh} />
       <TagEditor product={data} onSaved={refresh} />
       <VariantEditor
@@ -199,12 +216,26 @@ function DetailsEditor({
     if (description !== (product.description ?? '')) patch['descriptionHtml'] = description;
     if (vendor !== (product.vendor ?? '')) patch['vendor'] = vendor;
     if (productType !== (product.productType ?? '')) patch['productType'] = productType;
-    if (status !== product.status) patch['status'] = status;
+    if (status !== product.status) {
+      patch['status'] = status;
+      // Optimistic concurrency: tells the backend what status this form was built
+      // from. If Shopify has changed since, the save is refused with
+      // PRODUCT_CHANGED instead of silently overwriting the newer value.
+      patch['expectedStatus'] = product.status;
+    }
     return patch;
   }, [title, description, vendor, productType, status, product]);
 
   const dirty = Object.keys(changes).length > 0;
-  const publishing = status === 'ACTIVE' && product.status !== 'ACTIVE';
+  /**
+   * Setting ACTIVE does NOT publish.
+   *
+   * A product can be ACTIVE and published to no sales channel, in which case it
+   * stays invisible. So this warns about a status change without claiming it makes
+   * the product visible - publishing is the separate action in the Publication
+   * card below.
+   */
+  const activating = status === 'ACTIVE' && product.status !== 'ACTIVE';
 
   const save = async () => {
     if (!dirty) return;
@@ -240,19 +271,18 @@ function DetailsEditor({
       }
     >
       <div className="stack">
-        {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
-        )}
+        {error !== null && <ErrorCallout error={error} onRefresh={onSaved} />}
         {done && !dirty && (
           <Callout tone="info" title="Saved">
             Shopify has the new values.
           </Callout>
         )}
-        {publishing && (
-          <Callout tone="warning" title="This will publish the product">
-            Setting status to ACTIVE makes it visible to customers immediately.
+        {activating && (
+          <Callout tone="warning" title="Setting status to ACTIVE">
+            ACTIVE alone does <strong>not</strong> put a product on the storefront - it also has to
+            be published to the Online Store. Use the Publication card below to check and change
+            that. If it is already published, setting ACTIVE will make it visible to customers
+            immediately.
           </Callout>
         )}
         <div className="form-grid">
@@ -339,11 +369,7 @@ function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => v
   return (
     <Card title="Tags">
       <div className="stack">
-        {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
-        )}
+        {error !== null && <ErrorCallout error={error} onRefresh={onSaved} />}
         <p className="muted">
           Tags are added and removed individually. Trademart never replaces the whole tag list,
           which would silently drop tags set by other apps.
@@ -424,6 +450,13 @@ function VariantEditor({
       const price = prices[id];
       if (price !== undefined && price.trim() !== String(variant.price?.amount ?? '')) {
         entry['price'] = price.trim();
+        // Optimistic concurrency: the price this form was BUILT from. If someone
+        // changed it in the Shopify admin in the meantime, the backend refuses the
+        // whole save with PRODUCT_CHANGED rather than discarding their change.
+        // Sent as 2dp so it compares equal to the backend's normalised form.
+        if (variant.price !== null) {
+          entry['expectedPrice'] = variant.price.amount.toFixed(2);
+        }
         changed = true;
       }
       const compare = compareAt[id];
@@ -475,14 +508,11 @@ function VariantEditor({
       }
     >
       <div className="stack">
-        {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
-        )}
+        {error !== null && <ErrorCallout error={error} onRefresh={onSaved} />}
         <p className="muted">
           Editing a price here only changes this form. Nothing reaches Shopify until you press
-          Save.
+          Save. Each price is saved with the value it was loaded from, so if someone changes it in
+          Shopify meanwhile the save is refused rather than overwriting their change.
         </p>
         <div className="table-wrap">
           <table className="table">
@@ -653,10 +683,18 @@ function InventoryEditor({
     setError(null);
     setDone(null);
     try {
-      await apiPost<unknown>('/shopify/inventory/set', {
+      await apiPost<InventorySetResult>('/shopify/inventory/set', {
         inventoryItemId: variant.inventoryItemId,
         locationId: selectedLocation,
         quantity: parsed,
+        // Stale-write protection. If stock moved since this page loaded (a sale, a
+        // supplier sync), the backend refuses with PRODUCT_CHANGED rather than
+        // putting the sold units back.
+        ...(current !== null ? { expectedQuantity: current } : {}),
+        // Server-enforced. The dialog below is a courtesy; this flag is what
+        // actually satisfies the MAX_INVENTORY_DELTA check, and without it a large
+        // change is refused no matter what the UI did.
+        ...(major ? { confirmLargeChange: true } : {}),
       });
       setDone(`Set ${variant.title} to ${parsed}.`);
       setQuantity('');
@@ -677,11 +715,7 @@ function InventoryEditor({
             Could not list locations: {locations.error.message}
           </Callout>
         )}
-        {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
-        )}
+        {error !== null && <ErrorCallout error={error} onRefresh={onSaved} />}
         {done !== null && (
           <Callout tone="info" title="Stock updated">
             {done}
@@ -758,29 +792,230 @@ function InventoryEditor({
             onClick={() => (major ? setConfirm(true) : submit())}
             disabled={!canSubmit}
           >
-            {busy ? 'Saving…' : 'Set quantity'}
+            {busy ? 'Updating…' : 'Set quantity'}
           </button>
         </div>
+
+        {confirm && variant !== null && (
+          <ConfirmDialog
+            title="Confirm a large stock change"
+            intent={`Change stock for "${variant.title}" at ${
+              locations.data?.locations.find((l) => l.id === selectedLocation)?.name ??
+              'the selected location'
+            }.`}
+            changes={[
+              {
+                label: 'Quantity',
+                from: current === null ? null : String(current),
+                to: String(parsed),
+              },
+              {
+                label: 'Change',
+                to: delta === null ? 'unknown' : `${delta > 0 ? '+' : ''}${delta}`,
+              },
+              ...(variant.sku !== null ? [{ label: 'SKU', to: variant.sku }] : []),
+            ]}
+            consequence={
+              'This sets an absolute quantity, replacing whatever Shopify currently holds. The backend independently enforces its own limit on change size and records the previous quantity in the audit trail, so this is reversible.'
+            }
+            confirmLabel="Set quantity"
+            tone="warning"
+            busy={busy}
+            onConfirm={submit}
+            onCancel={() => setConfirm(false)}
+          />
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------ publication -- */
+
+/**
+ * Publication card: the authoritative answer to "can a customer see this?".
+ *
+ * Separate from the Details card on purpose. Status and publication are different
+ * things, and putting them in one form is what led to `status: ACTIVE` being
+ * treated as "published". Here they are shown side by side so the two halves of
+ * visibility are visibly distinct:
+ *
+ *   ACTIVE   + published   -> visible
+ *   ACTIVE   + unpublished -> invisible (looks live in the Shopify admin)
+ *   DRAFT    + published   -> invisible (one status change from being live)
+ *
+ * The state is read from GET /shopify/products/:id/publication, which asks Shopify
+ * directly rather than inferring anything.
+ */
+function PublicationCard({
+  product,
+  onChanged,
+}: {
+  product: ProductDto;
+  onChanged: () => void;
+}) {
+  const path = `/shopify/products/${encodeURIComponent(product.shopifyProductId)}/publication`;
+  const state = useApi<ProductPublicationState>(path);
+
+  const [busy, setBusy] = useState<'publish' | 'unpublish' | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [confirming, setConfirming] = useState<'publish' | 'unpublish' | null>(null);
+
+  const current = state.data;
+
+  const act = async (action: 'publish' | 'unpublish') => {
+    setBusy(action);
+    setError(null);
+    try {
+      await apiPost<ProductPublicationState>(
+        `/shopify/products/${encodeURIComponent(product.shopifyProductId)}/${action}`,
+        {},
+        // Stable per product and action, so a double-click cannot publish twice.
+        { idempotencyKey: `${action}-${product.shopifyProductId}` },
+      );
+      state.refetch();
+      onChanged();
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught
+          : new ApiError('UNKNOWN', `${action} failed.`, 0),
+      );
+    } finally {
+      setBusy(null);
+      setConfirming(null);
+    }
+  };
+
+  return (
+    <Card
+      title="Publication"
+      actions={
+        <div className="row" style={{ gap: 8 }}>
+          {current !== null && current.publishedToOnlineStore ? (
+            <button
+              className="btn btn--sm"
+              onClick={() => setConfirming('unpublish')}
+              disabled={busy !== null}
+            >
+              {busy === 'unpublish' ? 'Unpublishing…' : 'Unpublish…'}
+            </button>
+          ) : (
+            <button
+              className="btn btn--primary btn--sm"
+              onClick={() => setConfirming('publish')}
+              disabled={busy !== null || current === null}
+            >
+              {busy === 'publish' ? 'Publishing…' : 'Publish…'}
+            </button>
+          )}
+        </div>
+      }
+    >
+      <div className="stack">
+        {error !== null && (
+          <ErrorCallout error={error} onRetry={() => state.refetch()} onRefresh={() => state.refetch()} />
+        )}
+
+        {state.error !== null && (
+          <Callout tone="warning" title="Publication state unavailable">
+            {state.error.message}
+            <p className="muted" style={{ marginBottom: 0, marginTop: 6 }}>
+              Reading publication state needs the <span className="mono">read_publications</span>{' '}
+              scope. Until it is granted, Trademart reports visibility as unknown rather than
+              guessing it from the status.
+            </p>
+          </Callout>
+        )}
+
+        {state.loading && current === null && <p className="muted">Checking Shopify…</p>}
+
+        {current !== null && (
+          <>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <VisibilityBadge
+                status={current.status}
+                publishedToOnlineStore={current.publishedToOnlineStore}
+              />
+              <Badge tone={current.status === 'ACTIVE' ? 'success' : 'neutral'}>
+                status {current.status}
+              </Badge>
+              <Badge tone={current.publishedToOnlineStore ? 'success' : 'neutral'}>
+                {current.publishedToOnlineStore ? 'published' : 'not published'} to{' '}
+                {current.publicationName}
+              </Badge>
+            </div>
+
+            {/*
+              The two "looks fine but isn't" states get an explicit explanation,
+              because they are the ones an operator misreads. Neither is reported
+              as an error - both can be deliberate.
+            */}
+            {current.status === 'ACTIVE' && !current.publishedToOnlineStore && (
+              <Callout tone="warning" title="ACTIVE but not on the storefront">
+                This product looks live in the Shopify admin, but it is not published to the Online
+                Store, so customers cannot see it. Publish it, or set it to DRAFT so its status
+                matches reality.
+              </Callout>
+            )}
+            {current.status !== 'ACTIVE' && current.publishedToOnlineStore && (
+              <Callout tone="info" title="Published, but hidden by its status">
+                It is on the Online Store channel but its status is {current.status}, so it stays
+                hidden. Setting it ACTIVE would make it visible immediately.
+              </Callout>
+            )}
+
+            <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+              Checked {formatDateTime(current.checkedAt)}. Read from Shopify, not inferred.
+            </p>
+          </>
+        )}
       </div>
 
-      {confirm && (
-        <Modal title="Confirm a large stock change" onClose={() => setConfirm(false)}>
-          <div className="stack">
-            <Callout tone="warning" title="This is a big change">
-              {variant?.title} moves from {formatNumber(current)} to {parsed}
-              {delta !== null && ` (${delta > 0 ? '+' : ''}${delta})`}. Large jumps are usually a
-              mistyped digit, so this needs a second confirmation.
-            </Callout>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn" onClick={() => setConfirm(false)} disabled={busy}>
-                Cancel
-              </button>
-              <button className="btn btn--primary" onClick={submit} disabled={busy}>
-                {busy ? 'Saving…' : 'Yes, set it'}
-              </button>
-            </div>
-          </div>
-        </Modal>
+      {confirming === 'publish' && current !== null && (
+        <ConfirmDialog
+          title="Publish to the Online Store?"
+          intent={`Publish "${product.title}" to ${current.publicationName}.`}
+          changes={[
+            { label: 'Online Store', from: 'not published', to: 'published' },
+            { label: 'Status', from: current.status, to: `${current.status} (unchanged)` },
+            {
+              label: 'Visible to customers after this',
+              to: current.status === 'ACTIVE' ? 'YES' : `No - status is ${current.status}`,
+            },
+          ]}
+          consequence={
+            current.status === 'ACTIVE'
+              ? 'This product is ACTIVE, so publishing makes it visible and purchasable immediately.'
+              : `This product is ${current.status}, so publishing alone will NOT make it visible. It becomes visible when you also set it ACTIVE.`
+          }
+          confirmLabel="Publish"
+          tone={current.status === 'ACTIVE' ? 'warning' : 'info'}
+          busy={busy === 'publish'}
+          onConfirm={() => act('publish')}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
+
+      {confirming === 'unpublish' && current !== null && (
+        <ConfirmDialog
+          title="Remove from the Online Store?"
+          intent={`Unpublish "${product.title}" from ${current.publicationName}.`}
+          changes={[
+            { label: 'Online Store', from: 'published', to: 'not published' },
+            { label: 'Status', from: current.status, to: `${current.status} (unchanged)` },
+          ]}
+          consequence={
+            current.status === 'ACTIVE'
+              ? 'Customers will no longer be able to see or buy this product. Existing orders are unaffected. Any links to it will stop working.'
+              : 'This product is already hidden by its status, so customers will not notice a change.'
+          }
+          confirmLabel="Unpublish"
+          tone="danger"
+          busy={busy === 'unpublish'}
+          onConfirm={() => act('unpublish')}
+          onCancel={() => setConfirming(null)}
+        />
       )}
     </Card>
   );

@@ -472,6 +472,41 @@ export interface AutomationReport {
   summary: AutomationSummary;
   auditRunId: string | null;
   notes: string[];
+  /** Fingerprint of the rules this run used. */
+  rulesHash: string;
+  /**
+   * Fingerprint of the exact action list.
+   *
+   * For a preview this is what the operator is approving; for an apply it is
+   * proof the executed plan matched it. If the two ever differ the backend
+   * refuses with PREVIEW_STALE rather than writing.
+   */
+  planHash: string;
+  scope: PlanScope;
+  /**
+   * The single-use preview token. Present on a preview (send previewId back to
+   * apply) and on an apply (the token that authorised it).
+   */
+  preview: PreviewRecord | null;
+}
+
+export interface PlanScope {
+  query: string | null;
+  maxProducts: number;
+  productIds: string[] | null;
+}
+
+/** A preview token, as issued by POST /automation/preview. */
+export interface PreviewRecord {
+  previewId: string;
+  storeDomain: string;
+  rulesHash: string;
+  planHash: string;
+  scope: PlanScope;
+  generatedAt: string;
+  expiresAt: string;
+  /** Non-null once consumed. A preview is single-use. */
+  appliedAt: string | null;
 }
 
 export interface AutomationRun {
@@ -625,4 +660,231 @@ export interface InventorySetResult {
   quantity: number;
   /** Present when Shopify reported the resulting on-hand value. */
   applied?: boolean;
+}
+
+/* ===========================================================================
+ * Publication - "can a customer actually see this?"
+ *
+ * `status === 'ACTIVE'` and "published" are DIFFERENT things. A product can be
+ * ACTIVE and published to no sales channel (invisible), or published while DRAFT
+ * (also invisible). Only `visibleToCustomers` may be presented as visibility, and
+ * it is only ever set from a verified read on the backend.
+ * ======================================================================== */
+
+export interface ProductPublicationState {
+  shopifyProductId: string;
+  title: string | null;
+  status: string;
+  publicationId: string;
+  publicationName: string;
+  /** Shopify's own answer, never inferred from status. */
+  publishedToOnlineStore: boolean;
+  /** The ONLY field that may be shown as "customers can see it". */
+  visibleToCustomers: boolean;
+  checkedAt: string;
+}
+
+/** The outcome of a publication attempt, including the failure case. */
+export interface PublicationOutcome {
+  requested: boolean;
+  attempted: boolean;
+  /** VERIFIED by read-back - never taken from a mutation's return value. */
+  published: boolean;
+  publicationId: string | null;
+  publicationName: string | null;
+  verifiedAt: string | null;
+  error: { code: string; message: string } | null;
+}
+
+/**
+ * Result of POST /api/shopify/products.
+ *
+ * Returned with HTTP 207 when `partialSuccess` is true: the product exists but
+ * did not reach the requested end state (most commonly, publication failed and it
+ * was deliberately left as a DRAFT).
+ */
+export interface ProductCreateResult {
+  shopifyProductId: string;
+  title: string;
+  /** What Shopify reports NOW, not what was requested. */
+  status: string;
+  desiredStatus: string;
+  variantsCreated: number;
+  mediaAttached: number;
+  publication: PublicationOutcome;
+  visibleToCustomers: boolean;
+  partialSuccess: boolean;
+  warnings: string[];
+}
+
+/** Result of POST /api/automation/approve. */
+export interface ApprovalResult {
+  shopifyProductId: string;
+  status: string;
+  publishedToOnlineStore: boolean;
+  visibleToCustomers: boolean;
+  /** False means the product is deliberately still held for review. */
+  reviewTagRemoved: boolean;
+  stillInReviewQueue: boolean;
+  warnings: string[];
+}
+
+/* ===========================================================================
+ * Operations, diagnostics and audit
+ * ======================================================================== */
+
+export interface AuditEntry {
+  _id?: string;
+  shopDomain: string;
+  actor: string;
+  authMethod: string | null;
+  at: string;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  before: unknown;
+  after: unknown;
+  requestId: string | null;
+  result: 'SUCCESS' | 'FAILURE';
+  errorCode: string | null;
+  errorMessage: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export type WebhookEventState =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'PROCESSED'
+  | 'FAILED'
+  | 'IGNORED';
+
+export interface WebhookEventDto {
+  _id?: string;
+  shopDomain: string;
+  topic: string;
+  webhookId: string | null;
+  receivedAt: string;
+  processedAt: string | null;
+  status: WebhookEventState;
+  attempts: number;
+  nextAttemptAt: string | null;
+  error: string | null;
+  errorCode: string | null;
+  ignoredReason: string | null;
+  requestId: string | null;
+}
+
+export interface WebhookQueueStats {
+  counts: Partial<Record<WebhookEventState, number>>;
+  oldestPending: string | null;
+  lastProcessedAt: string | null;
+  failed: number;
+  workerRunning: boolean;
+}
+
+export interface WebhookEventsResponse {
+  events: WebhookEventDto[];
+  stats: WebhookQueueStats;
+}
+
+export interface IntegrityFinding {
+  code: string;
+  severity: 'warning' | 'info';
+  shopifyProductId: string;
+  shopifyVariantId: string | null;
+  title: string;
+  detail: string;
+  /** Never performed automatically - every finding has more than one cause. */
+  recommendedAction: string;
+}
+
+export interface IntegrityReport {
+  shopDomain: string;
+  checkedAt: string;
+  productsInspected: boolean;
+  productsScanned: number;
+  truncated: boolean;
+  publicationChecked: boolean;
+  findings: IntegrityFinding[];
+  counts: Record<string, number>;
+  /** Checks that could not run, and why. Never silently omitted. */
+  skipped: { check: string; reason: string }[];
+}
+
+/**
+ * Whether this deployment points at a development store or a real one.
+ *
+ * `declaredMode` is what the operator configured; `shopifyIsDevelopmentStore` is
+ * Shopify's own answer. `effectiveMode` is 'development' only when BOTH agree -
+ * anything else is treated as live.
+ */
+export interface StoreSafety {
+  declaredMode: 'development' | 'production';
+  verified: boolean;
+  shopifyIsDevelopmentStore: boolean | null;
+  planDisplayName: string | null;
+  effectiveMode: 'development' | 'production';
+  mismatch: boolean;
+  liveStoreWritesAcknowledged: boolean;
+  automatedWritesAllowed: boolean;
+  reason: string;
+  checkedAt: string;
+}
+
+export interface RateLimitReport {
+  throttle: {
+    currentlyAvailable: number | null;
+    maximumAvailable: number | null;
+    restoreRate: number | null;
+    availablePercentage: number | null;
+    lastRequestedQueryCost: number | null;
+    lastActualQueryCost: number | null;
+  } | null;
+  breaker: {
+    state: 'closed' | 'open';
+    consecutiveFailures: number;
+    lastFailureCode: string | null;
+    lastFailureAt: string | null;
+  };
+  /** Where the numbers came from - never a live probe of Shopify. */
+  source: 'last-shopify-response' | 'none';
+  note: string;
+}
+
+export interface VersionInfo {
+  version: string;
+  gitSha: string;
+  gitShaShort: string;
+  buildTime: string | null;
+  nodeVersion: string;
+  uptimeSeconds: number;
+  startedAt: string;
+}
+
+export interface AutomationLockStatus {
+  locked: boolean;
+  holder: {
+    startedAt: string;
+    trigger: string;
+    requestId: string | null;
+    actor: string | null;
+    leaseExpiresAt: string;
+  } | null;
+}
+
+/** Result of POST /api/shopify/inventory/set. */
+export interface InventorySetResult {
+  inventoryItemId: string;
+  locationId: string;
+  locationName: string | null;
+  name: string;
+  /** The quantity BEFORE the change, so the write is reversible. */
+  quantityBefore: number | null;
+  quantityAfter: number | null;
+  delta: number | null;
+  /** True when the change exceeded the server limit and was explicitly confirmed. */
+  largeChangeConfirmed: boolean;
+  sku: string | null;
+  shopifyProductId: string | null;
+  shopifyVariantId: string | null;
 }

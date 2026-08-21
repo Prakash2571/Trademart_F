@@ -9,27 +9,52 @@
  * that somebody looks before a customer does.
  *
  * Approval reuses POST /api/automation/approve rather than reimplementing it, so
- * the tag removal and the publish stay in one place on the backend.
+ * the ordering guarantee stays in one place on the backend:
+ *
+ *     stays DRAFT + tagged -> publish -> VERIFY -> ACTIVE -> VERIFY -> untag
+ *
+ * Every failure path leaves the product exactly as it started - DRAFT, tagged,
+ * and still in this queue - so a failed approval can never lose a product. This
+ * page therefore has to read the RESULT rather than assume success: approval can
+ * legitimately end with the product live but still tagged, or published but not
+ * visible, and those are different situations.
  */
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 
-import { Badge, Callout, Card, EmptyState, ErrorState, PageHeader } from '@/components/ui';
+import {
+  Badge,
+  Callout,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  ErrorCallout,
+  ErrorState,
+  PageHeader,
+  VisibilityBadge,
+} from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
 import { formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
+  ApprovalResult,
   AutomationStatus,
   ManualCostRecord,
   ProductDto,
   ProductVariantDto,
 } from '@/lib/types';
 
-/** The tag automation applies to hold a product for review. */
+/**
+ * The tag automation applies to hold a product for review.
+ * Must match AUTOMATION_REVIEW_TAG in the backend's automation/rules.types.ts.
+ */
 const REVIEW_TAG = 'trademart:needs-review';
-/** Adding this tag takes a product out of automation permanently. */
+/**
+ * Adding this tag takes a product out of automation permanently.
+ * Must match NO_AUTOMATION_TAG in the backend's automation/rules.types.ts.
+ */
 const NO_AUTOMATION_TAG = 'trademart:no-automation';
 
 export default function ProductReviewPage() {
@@ -136,6 +161,9 @@ function ReviewItem({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [costTarget, setCostTarget] = useState<ProductVariantDto | 'product' | null>(null);
+  /** A partial approval outcome worth keeping on screen. */
+  const [outcome, setOutcome] = useState<ApprovalResult | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const currency =
     product.minPrice?.currencyCode ?? product.variants[0]?.price?.currencyCode ?? 'GBP';
@@ -145,10 +173,23 @@ function ReviewItem({
   const approve = async () => {
     setBusy('approve');
     setError(null);
+    setOutcome(null);
     try {
-      // Reuses the backend's approve logic: removes the review/hidden tags and
-      // sets the product ACTIVE. Not reimplemented here.
-      await apiPost<unknown>('/automation/approve', { productId: product.shopifyProductId });
+      const response = await apiPost<ApprovalResult>(
+        '/automation/approve',
+        { productId: product.shopifyProductId },
+        // Stable per product: a double-click or a retry after a lost response
+        // replays the first outcome rather than re-running the publish.
+        { idempotencyKey: `approve-${product.shopifyProductId}` },
+      );
+      const result = response.data;
+
+      // Only clear the local notice and refresh when the product genuinely left
+      // the queue. A partial approval must stay on screen, because the operator
+      // has something left to do and the item will reappear below.
+      if (result.warnings.length > 0 || !result.visibleToCustomers) {
+        setOutcome(result);
+      }
       onChanged();
     } catch (caught) {
       setError(
@@ -156,6 +197,7 @@ function ReviewItem({
       );
     } finally {
       setBusy(null);
+      setConfirming(false);
     }
   };
 
@@ -223,11 +265,11 @@ function ReviewItem({
           </button>
           <button
             className="btn btn--primary btn--sm"
-            onClick={approve}
+            onClick={() => setConfirming(true)}
             disabled={busy !== null || !writesEnabled}
             title={
               writesEnabled
-                ? 'Removes the review tag and sets the product ACTIVE'
+                ? 'Publishes to the Online Store, verifies it, then sets the product ACTIVE'
                 : 'Enable writes on the backend first (AUTOMATION_ENABLED=true)'
             }
           >
@@ -238,8 +280,45 @@ function ReviewItem({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
+          <>
+            <ErrorCallout error={error} onRetry={() => setConfirming(true)} onRefresh={onChanged} />
+            {error.code === 'PUBLICATION_FAILED' && (
+              <Callout tone="info" title="This product has not been lost">
+                It is still a DRAFT, still carries the{' '}
+                <span className="mono">{REVIEW_TAG}</span> tag, and is still in this queue. Nothing
+                is visible to customers. Fix the cause and approve it again - approving is safe to
+                repeat.
+              </Callout>
+            )}
+          </>
+        )}
+
+        {outcome !== null && (
+          <Callout
+            tone={outcome.visibleToCustomers ? 'warning' : 'danger'}
+            title={
+              outcome.visibleToCustomers
+                ? 'Published, but not fully finished'
+                : 'Approved partially - NOT visible to customers'
+            }
+          >
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <Badge tone={outcome.status === 'ACTIVE' ? 'success' : 'neutral'}>
+                status {outcome.status}
+              </Badge>
+              <VisibilityBadge
+                status={outcome.status}
+                publishedToOnlineStore={outcome.publishedToOnlineStore}
+              />
+              {outcome.stillInReviewQueue && (
+                <Badge tone="warning">still in the review queue</Badge>
+              )}
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {outcome.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
           </Callout>
         )}
 
@@ -304,6 +383,26 @@ function ReviewItem({
           onSetCost={(variant) => setCostTarget(variant)}
         />
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title="Publish this product to the Online Store?"
+          intent={`Publish "${product.title}" and make it ACTIVE.`}
+          changes={[
+            { label: 'Status', from: product.status, to: 'ACTIVE' },
+            { label: 'Online Store', from: 'not published', to: 'published' },
+            { label: 'Review tag', from: REVIEW_TAG, to: 'removed once verified' },
+          ]}
+          consequence={
+            'Customers will be able to see and buy this product immediately. If publication fails, the product is left as a DRAFT with its review tag and stays in this queue - nothing is lost.'
+          }
+          confirmLabel="Publish it"
+          tone="warning"
+          busy={busy === 'approve'}
+          onConfirm={approve}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
 
       {costTarget !== null && (
         <ManualCostEditor

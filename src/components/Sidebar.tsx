@@ -29,6 +29,10 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/automation', label: 'Automation', icon: '⚡' },
   { href: '/suppliers', label: 'Suppliers', icon: '⛃' },
   { href: '/storefront', label: 'Storefront', icon: '◫' },
+  // Read-only history of every change and every refused attempt. Placed before
+  // Settings because it is an operational view, not configuration.
+  { href: '/audit', label: 'Audit trail', icon: '⎘' },
+  { href: '/system', label: 'System', icon: '◉' },
   { href: '/settings', label: 'Settings', icon: '⚙' },
 ];
 

@@ -11,29 +11,32 @@
 # env var. It must be a URL the visitor's browser can resolve - the default `/api`
 # is same-origin through nginx, which also sidesteps the backend's CORS allowlist.
 #
-# DEPENDENCY INSTALL: `npm ci` when a lockfile is committed, `npm install`
-# otherwise. npm ci is strictly better - it installs exactly what the lockfile
-# pins and fails if package.json disagrees - but it REQUIRES the lockfile, so an
-# unconditional `npm ci` would make the image unbuildable until one is added.
+# REPRODUCIBLE BUILDS
+# -------------------
+# `npm ci` only, from a committed package-lock.json. The previous
+# `package-lock.json*` wildcard and `npm install` fallback have been removed on
+# purpose: they made the image buildable without a lockfile, which meant the
+# image contained whatever versions were newest that day. The COPY below now
+# fails immediately if the lockfile is absent, which is the intended behaviour -
+# an unreproducible production image is worse than a failed build.
 #
-# The wildcard in the COPY is what makes this work: `package-lock.json*` matches
-# zero files without erroring. Commit a lockfile and this switches to npm ci on
-# the next build with no edit here.
+# To create it (needs network access to the npm registry):
 #   npm install --package-lock-only && git add package-lock.json
+#
+# BASE IMAGE PINNING
+# ------------------
+# Pinned to a specific Node minor + Alpine version so a base-image refresh
+# cannot silently change the runtime under a deployed app.
+ARG NODE_IMAGE=node:22.14.0-alpine3.21
 
 # ---------------------------------------------------------------- deps --------
-FROM node:22-alpine AS deps
+FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then \
-      echo "Lockfile present - npm ci"; npm ci --no-audit --no-fund; \
-    else \
-      echo "WARNING: no package-lock.json - falling back to npm install; this build is not reproducible"; \
-      npm install --no-audit --no-fund; \
-    fi
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # --------------------------------------------------------------- build --------
-FROM node:22-alpine AS build
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 ARG NEXT_PUBLIC_API_BASE_URL=/api
@@ -48,14 +51,27 @@ COPY src ./src
 RUN npm run build
 
 # ------------------------------------------------------------- runtime --------
-FROM node:22-alpine AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 RUN apk add --no-cache dumb-init
+
+# Build metadata so a deployed container can be tied back to a commit.
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ARG APP_VERSION=0.2.0
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME} \
+    APP_VERSION=${APP_VERSION}
+
+LABEL org.opencontainers.image.title="trademart-frontend" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
 
 WORKDIR /app
 

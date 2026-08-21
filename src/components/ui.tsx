@@ -8,9 +8,10 @@
 
 'use client';
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { ApiError } from '@/lib/api';
+import { isNoOpFailure, presentError } from '@/lib/errorMessages';
 import { NOT_AVAILABLE } from '@/lib/format';
 
 /* ------------------------------------------------------------------ card -- */
@@ -114,14 +115,21 @@ export function Badge({
   children,
   tone = 'neutral',
   dot,
+  title,
 }: {
   children: ReactNode;
   tone?: BadgeTone;
   dot?: boolean;
+  /**
+   * Tooltip text. Badges are necessarily terse, and for state badges the
+   * important part is often WHY the state is what it is - "active, NOT published"
+   * needs somewhere to say which half is missing.
+   */
+  title?: string;
 }) {
   const suffix = tone === 'neutral' ? '' : ` badge--${tone}`;
   return (
-    <span className={`badge${suffix}`}>
+    <span className={`badge${suffix}`} title={title}>
       {dot && <span className="badge__dot" aria-hidden="true" />}
       {children}
     </span>
@@ -177,13 +185,22 @@ export function Callout({
   title,
   children,
 }: {
-  tone?: 'info' | 'warning' | 'danger';
+  // 'success' exists so a confirmed-good outcome can be stated as strongly as a
+  // problem. Publication in particular needs it: "customers can see this" is the
+  // one positive claim in the app that has to be unmistakable when it is true,
+  // and indistinguishable from neutral information when it is not.
+  tone?: 'info' | 'warning' | 'danger' | 'success';
   title?: string;
   children: ReactNode;
 }) {
-  const icon = tone === 'danger' ? '!' : tone === 'warning' ? '!' : 'i';
+  const icon = tone === 'danger' || tone === 'warning' ? '!' : tone === 'success' ? '\u2713' : 'i';
   return (
-    <div className={`callout callout--${tone}`} role={tone === 'info' ? undefined : 'alert'}>
+    <div
+      className={`callout callout--${tone}`}
+      // Only problems interrupt a screen reader. A success message is announced
+      // politely via the surrounding live region instead of as an alert.
+      role={tone === 'danger' || tone === 'warning' ? 'alert' : undefined}
+    >
       <span className="callout__icon" aria-hidden="true">
         {icon}
       </span>
@@ -274,16 +291,24 @@ export function ErrorState({
   error: ApiError;
   onRetry?: () => void;
 }) {
+  const presentation = presentError(error.code);
+
   return (
     <div className="state" role="alert">
       <div className="state__icon" aria-hidden="true">
         !
       </div>
-      <div className="state__title">{errorHeadline(error)}</div>
+      <div className="state__title">{presentation.title}</div>
       <div className="state__code">{error.code}</div>
       <p className="state__desc">{error.message}</p>
-      {remedy(error) && <p className="state__desc muted">{remedy(error)}</p>}
-      {onRetry && !error.isConfigurationProblem && (
+      <p className="state__desc muted">{presentation.action}</p>
+      {isNoOpFailure(error.code) && (
+        <p className="state__desc muted">
+          <strong>Nothing was changed.</strong>
+        </p>
+      )}
+      <RequestIdLine requestId={error.requestId} />
+      {onRetry && presentation.offerRetry && (
         <button type="button" className="btn" onClick={onRetry}>
           Try again
         </button>
@@ -292,58 +317,61 @@ export function ErrorState({
   );
 }
 
-function errorHeadline(error: ApiError): string {
-  switch (error.code) {
-    case 'BACKEND_UNREACHABLE':
-      return 'Cannot reach the Trademart backend';
-    case 'SHOPIFY_NOT_CONFIGURED':
-      return 'Shopify is not configured';
-    case 'SHOPIFY_AUTH_FAILED':
-      return 'Could not obtain a Shopify access token';
-    case 'SHOPIFY_APP_NOT_INSTALLED':
-      return 'The app is not installed on this store';
-    case 'SHOPIFY_UNAUTHORIZED':
-      return 'Shopify rejected the access token';
-    case 'SHOPIFY_SCOPE_MISSING':
-      return 'Missing Shopify permission';
-    case 'SHOPIFY_THROTTLED':
-      return 'Shopify rate limit reached';
-    case 'RATE_LIMITED':
-      return 'Too many requests';
-    case 'UNAUTHORIZED':
-      return 'Sign in required';
-    case 'CSRF_INVALID':
-      return 'Session check failed';
-    case 'OPERATOR_NOT_CONFIGURED':
-      return 'Operator login is not configured';
-    default:
-      return 'Something went wrong';
-  }
+/**
+ * Inline error callout, for a failure attached to one action rather than a whole
+ * page. Shows the code, the backend message, what to do, and the request id.
+ *
+ * The request id is the point: it is what makes "this operation failed" findable
+ * across nginx, the backend log and the audit trail.
+ */
+export function ErrorCallout({
+  error,
+  onRetry,
+  onRefresh,
+}: {
+  error: ApiError;
+  onRetry?: () => void;
+  onRefresh?: () => void;
+}) {
+  const presentation = presentError(error.code);
+
+  return (
+    <Callout tone={presentation.tone} title={presentation.title}>
+      <p style={{ margin: '0 0 6px' }}>{error.message}</p>
+      <p className="muted" style={{ margin: '0 0 6px' }}>
+        {presentation.action}
+      </p>
+      {isNoOpFailure(error.code) && (
+        <p style={{ margin: '0 0 6px' }}>
+          <strong>Nothing was changed.</strong>
+        </p>
+      )}
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Badge tone="neutral">{error.code}</Badge>
+        {onRefresh && presentation.offerRefresh && (
+          <button type="button" className="btn btn--sm" onClick={onRefresh}>
+            Refresh
+          </button>
+        )}
+        {onRetry && presentation.offerRetry && (
+          <button type="button" className="btn btn--sm" onClick={onRetry}>
+            Try again
+          </button>
+        )}
+      </div>
+      <RequestIdLine requestId={error.requestId} />
+    </Callout>
+  );
 }
 
-function remedy(error: ApiError): string | null {
-  switch (error.code) {
-    case 'BACKEND_UNREACHABLE':
-      return 'Start the backend with `npm run dev` and confirm NEXT_PUBLIC_API_BASE_URL points at it.';
-    case 'SHOPIFY_NOT_CONFIGURED':
-      return 'Add SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET to the backend .env file and restart the backend.';
-    case 'SHOPIFY_AUTH_FAILED':
-      return 'Check that SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET match the app in the Shopify Dev Dashboard.';
-    case 'SHOPIFY_APP_NOT_INSTALLED':
-      return 'Install or update the Trademart app on this store, then retry. The client credentials grant only works on stores where the app is installed.';
-    case 'SHOPIFY_SCOPE_MISSING':
-      return 'Add the scope in the Shopify Dev Dashboard, release a new app version, then update the install on the store.';
-    case 'SHOPIFY_THROTTLED':
-      return 'Wait a few seconds and retry - the backend already retries with backoff.';
-    case 'UNAUTHORIZED':
-      return 'Sign in as an operator, then retry.';
-    case 'CSRF_INVALID':
-      return 'Your session token is missing or stale. Sign in again.';
-    case 'OPERATOR_NOT_CONFIGURED':
-      return 'Set OPERATOR_PASSWORD_HASH and SESSION_SECRET on the backend (npm run operator:hash), then restart it.';
-    default:
-      return null;
-  }
+/** Shows the correlation id, so an operator can quote one value when reporting. */
+export function RequestIdLine({ requestId }: { requestId: string | null }) {
+  if (requestId === null) return null;
+  return (
+    <p className="muted" style={{ fontSize: 12, margin: '6px 0 0' }}>
+      Request id <span className="mono">{requestId}</span> — quote this when reporting the problem.
+    </p>
+  );
 }
 
 /* ----------------------------------------------------------------- modal -- */
@@ -414,4 +442,186 @@ export function KeyValue({ items }: { items: { key: string; value: ReactNode }[]
       ))}
     </div>
   );
+}
+
+/* ------------------------------------------------------- confirm dialog ---- */
+
+export interface ConfirmChange {
+  /** What is being changed, e.g. 'Price' or 'Status'. */
+  label: string;
+  /** Current value. Omit for a create. */
+  from?: string | null;
+  /** Value after the change. */
+  to: string;
+}
+
+/**
+ * Confirmation dialog for a consequential action.
+ *
+ * The rule this component exists to enforce: a confirmation must state WHAT will
+ * change. "Are you sure?" trains an operator to click through without reading,
+ * which makes it worse than no dialog - it adds friction while removing nothing.
+ * So `changes` is a required, structured list rather than free text.
+ *
+ * `requireTypedConfirmation` is for the genuinely irreversible: the operator has
+ * to type a word, which cannot be done by muscle memory.
+ */
+export function ConfirmDialog({
+  title,
+  intent,
+  changes,
+  consequence,
+  confirmLabel,
+  tone = 'warning',
+  busy = false,
+  requireTypedConfirmation,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  /** One sentence naming the specific thing being acted on. */
+  intent: string;
+  changes: ConfirmChange[];
+  /** What the operator should understand about the effect. Optional. */
+  consequence?: string;
+  confirmLabel: string;
+  tone?: 'warning' | 'danger' | 'info';
+  busy?: boolean;
+  requireTypedConfirmation?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  const typedOk =
+    requireTypedConfirmation === undefined ||
+    typed.trim().toUpperCase() === requireTypedConfirmation.toUpperCase();
+
+  // Focus moves into the dialog on open, so the confirm action is reachable by
+  // keyboard without tabbing through the page behind it.
+  useEffect(() => {
+    confirmRef.current?.focus();
+  }, []);
+
+  return (
+    <Modal title={title} onClose={busy ? () => {} : onCancel}>
+      <div className="stack">
+        <p style={{ margin: 0 }}>{intent}</p>
+
+        {changes.length > 0 && (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Field</th>
+                  <th>From</th>
+                  <th>To</th>
+                </tr>
+              </thead>
+              <tbody>
+                {changes.map((change) => (
+                  <tr key={`${change.label}-${change.to}`}>
+                    <td>{change.label}</td>
+                    <td className="mono muted">
+                      {change.from === undefined || change.from === null ? '—' : change.from}
+                    </td>
+                    <td className="mono">
+                      <strong>{change.to}</strong>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {consequence !== undefined && (
+          <Callout tone={tone} title="What this means">
+            {consequence}
+          </Callout>
+        )}
+
+        {requireTypedConfirmation !== undefined && (
+          <div className="field">
+            <label className="field__label" htmlFor="confirm-typed">
+              Type <span className="mono">{requireTypedConfirmation}</span> to confirm
+            </label>
+            <input
+              id="confirm-typed"
+              className="input"
+              value={typed}
+              onChange={(event) => setTyped(event.target.value)}
+              autoComplete="off"
+              disabled={busy}
+            />
+          </div>
+        )}
+
+        <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className={tone === 'danger' ? 'btn btn--danger' : 'btn btn--primary'}
+            onClick={onConfirm}
+            disabled={busy || !typedOk}
+          >
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------- visibility indicator ---- */
+
+/**
+ * The single component allowed to state whether customers can see a product.
+ *
+ * Takes `status` and `publishedToOnlineStore` SEPARATELY and requires both,
+ * because either one alone is wrong: an ACTIVE product published to no channel is
+ * invisible, and a published DRAFT is invisible too. `publishedToOnlineStore` of
+ * null means the backend could not read publication state (usually a missing
+ * read_publications scope), which is reported as unknown rather than guessed.
+ */
+export function VisibilityBadge({
+  status,
+  publishedToOnlineStore,
+}: {
+  status: string;
+  publishedToOnlineStore: boolean | null;
+}) {
+  if (publishedToOnlineStore === null) {
+    return (
+      <Badge tone="neutral" title="Publication state could not be read from Shopify">
+        visibility unknown
+      </Badge>
+    );
+  }
+  if (status === 'ACTIVE' && publishedToOnlineStore) {
+    return (
+      <Badge tone="success" dot title="ACTIVE and published to the Online Store">
+        visible to customers
+      </Badge>
+    );
+  }
+  if (status === 'ACTIVE' && !publishedToOnlineStore) {
+    return (
+      <Badge tone="warning" title="ACTIVE but not published to the Online Store">
+        active, NOT published
+      </Badge>
+    );
+  }
+  if (status !== 'ACTIVE' && publishedToOnlineStore) {
+    return (
+      <Badge tone="warning" title={`Published to the Online Store but status is ${status}`}>
+        published but {status.toLowerCase()}
+      </Badge>
+    );
+  }
+  return <Badge tone="neutral">hidden ({status.toLowerCase()})</Badge>;
 }

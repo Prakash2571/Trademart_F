@@ -5,6 +5,14 @@ name: CI
 # The build step matters more here than it looks: earlier frontend work was
 # committed without ever running `next build`, so type errors and bad imports
 # reached the repository unnoticed. This job is what stops that recurring.
+#
+# REPRODUCIBLE BUILDS
+# -------------------
+# `npm ci` is used unconditionally, and the lockfile is verified before anything
+# else runs. The previous `npm install` fallback has been removed on purpose: a
+# fallback means CI builds something other than what the lockfile describes, so
+# a green build stops being evidence that the pinned tree works. A missing or
+# inconsistent lockfile now FAILS with instructions instead of warning.
 
 on:
   push:
@@ -16,9 +24,57 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: '22'
+
 jobs:
+  lockfile:
+    name: lockfile is present and consistent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Lockfile must be committed
+        run: |
+          if [ ! -f package-lock.json ]; then
+            echo "::error title=Missing package-lock.json::A committed lockfile is required for reproducible builds. Generate and commit one:"
+            echo ""
+            echo "    npm install --package-lock-only"
+            echo "    git add package-lock.json && git commit -m 'chore: commit lockfile for reproducible builds'"
+            echo ""
+            echo "Without it, CI and Docker resolve whatever versions happen to be newest, so two builds of the same commit can differ."
+            exit 1
+          fi
+          echo "package-lock.json is present."
+
+      - name: Lockfile must agree with package.json
+        # `npm ci` exits non-zero when the lockfile is out of sync with
+        # package.json, which is exactly the inconsistency to catch.
+        run: |
+          if ! npm ci --dry-run > lockfile-check.log 2>&1; then
+            echo "::error title=Lockfile out of sync::package-lock.json does not match package.json. Run 'npm install' and commit the updated lockfile."
+            cat lockfile-check.log
+            exit 1
+          fi
+          echo "package-lock.json is consistent with package.json."
+
+      - name: Lockfile version integrity
+        run: |
+          VERSION=$(node -p "require('./package-lock.json').lockfileVersion")
+          echo "lockfileVersion=$VERSION"
+          if [ "$VERSION" -lt 2 ]; then
+            echo "::error title=Old lockfile format::lockfileVersion $VERSION lacks integrity hashes for the full tree. Regenerate with npm 8 or newer."
+            exit 1
+          fi
+
   build:
     name: typecheck, build
+    needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -27,25 +83,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      # `npm ci` is the goal but REQUIRES a committed lockfile. None exists yet
-      # (it could not be generated where this was authored - the npm registry
-      # was unreachable), so this falls back to `npm install` and warns rather
-      # than failing every PR before anything is checked.
-      #
-      # To enable npm ci, with no edit needed here:
-      #   npm install --package-lock-only && git add package-lock.json
+      # No fallback. See the note at the top of this file.
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "Lockfile found - using npm ci (reproducible)."
-            npm ci
-          else
-            echo "::warning title=No lockfile::package-lock.json is missing, so this build is NOT reproducible. Run 'npm install --package-lock-only' and commit the result to enable npm ci."
-            npm install --no-audit --no-fund
-          fi
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
@@ -69,6 +112,7 @@ jobs:
 
   docker:
     name: docker image
+    needs: lockfile
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -86,6 +130,7 @@ jobs:
           load: false
           build-args: |
             NEXT_PUBLIC_API_BASE_URL=/api
+            GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -95,6 +140,7 @@ jobs:
 # Settings -> Branches -> add a rule for `main`:
 #   - Require a pull request before merging
 #   - Require status checks to pass:
+#       "lockfile is present and consistent"
 #       "typecheck, build"
 #       "docker image"
 #   - Require branches to be up to date before merging
