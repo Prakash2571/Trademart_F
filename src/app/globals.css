@@ -468,6 +468,14 @@ table.table {
   color: #8a1a12;
 }
 
+/* Used for a CONFIRMED good outcome - notably a verified publication, where
+   "customers can see this" must look different from ordinary information. */
+.callout--success {
+  background: var(--success-soft);
+  border-color: #bfe3c8;
+  color: #14532d;
+}
+
 .callout__icon {
   flex-shrink: 0;
   font-weight: 700;

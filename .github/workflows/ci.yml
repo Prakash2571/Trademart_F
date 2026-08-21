@@ -30,22 +30,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      # `npm ci` is the goal but REQUIRES a committed lockfile. None exists yet
-      # (it could not be generated where this was authored - the npm registry
-      # was unreachable), so this falls back to `npm install` and warns rather
-      # than failing every PR before anything is checked.
-      #
-      # To enable npm ci, with no edit needed here:
-      #   npm install --package-lock-only && git add package-lock.json
+      # `npm ci` ONLY. package-lock.json is committed (lockfileVersion 3, every
+      # package carrying an integrity hash), so this installs the exact resolved
+      # tree and fails loudly if the lockfile and package.json disagree. The
+      # earlier "generate a lockfile if none exists" step has been removed now
+      # that a real one exists: a fallback that silently resolves fresh versions
+      # would let the image ship dependencies CI never tested.
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "Lockfile found - using npm ci (reproducible)."
-            npm ci
-          else
-            echo "::warning title=No lockfile::package-lock.json is missing, so this build is NOT reproducible. Run 'npm install --package-lock-only' and commit the result to enable npm ci."
-            npm install --no-audit --no-fund
-          fi
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck

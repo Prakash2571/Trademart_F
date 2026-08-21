@@ -13,12 +13,12 @@
  * request body, so nothing is sent that the operator has not seen.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-import { Badge, Callout, Card, PageHeader } from '@/components/ui';
-import { ApiError, apiPost, apiPut } from '@/lib/api';
-import type { ProductDto } from '@/lib/types';
+import { Badge, Callout, Card, ErrorCallout, PageHeader } from '@/components/ui';
+import { ApiError, apiPost, apiPut, newIdempotencyKey } from '@/lib/api';
+import type { CreatedVariant, ProductCreateResult } from '@/lib/types';
 
 interface OptionDraft {
   name: string;
@@ -87,7 +87,19 @@ function NewProductWizard() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [costWarning, setCostWarning] = useState<string | null>(null);
-  const [created, setCreated] = useState<ProductDto | null>(null);
+  const [created, setCreated] = useState<ProductCreateResult | null>(null);
+
+  /**
+   * Idempotency key for the create POST.
+   *
+   * Generated ONCE per submission and held here so that if the response is lost -
+   * the product was created but the browser never heard back - clicking submit
+   * again REUSES the key. The backend then replays the stored result instead of
+   * creating a second product. Cleared on success, so the next product gets its
+   * own key. A permanent per-product key would be wrong here: there is no product
+   * id yet to derive one from, and the point is to guard the create itself.
+   */
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   const parsedOptions = useMemo(
     () =>
@@ -110,8 +122,11 @@ function NewProductWizard() {
       ...(descriptionHtml.trim().length > 0 ? { descriptionHtml } : {}),
       ...(vendor.trim().length > 0 ? { vendor: vendor.trim() } : {}),
       ...(productType.trim().length > 0 ? { productType: productType.trim() } : {}),
-      // DRAFT unless explicitly published.
-      status: publish ? 'ACTIVE' : 'DRAFT',
+      // Always created DRAFT. `publish` asks the backend to publish + verify +
+      // activate; it never creates ACTIVE directly (ACTIVE without a channel
+      // publication is invisible-but-looks-live).
+      status: 'DRAFT',
+      publish,
       tags: tags
         .split(',')
         .map((tag) => tag.trim())
@@ -156,27 +171,43 @@ function NewProductWizard() {
     setBusy(true);
     setError(null);
     setCostWarning(null);
+    // Reuse the pending key if this is a retry of a failed submission; mint one
+    // otherwise. Reused across retries, fresh per new submission.
+    if (idempotencyKeyRef.current === null) {
+      idempotencyKeyRef.current = newIdempotencyKey();
+    }
     try {
-      const response = await apiPost<ProductDto>('/shopify/products', requestBody);
+      const response = await apiPost<ProductCreateResult>('/shopify/products', requestBody, {
+        idempotencyKey: idempotencyKeyRef.current,
+      });
       const product = response.data;
+      // The create landed. Release the key so the next product is a new operation.
+      idempotencyKeyRef.current = null;
       setCreated(product);
 
-      // Manual costs are a separate concern (/api/costs), so they are recorded
-      // after creation. A failure here must NOT read as "product creation
-      // failed" - the product exists either way.
+      // Manual costs are a separate concern (/api/costs), recorded AFTER
+      // creation. A failure here must never read as "product creation failed" -
+      // the product exists either way. Each cost is mapped to the REAL Shopify
+      // variant id by SKU (then option values), never by assuming the created
+      // order matches the form order.
       const withCost = variants.filter(
         (variant) => variant.price.trim().length > 0 && variant.manualCost.trim().length > 0,
       );
       if (withCost.length > 0) {
         const failures: string[] = [];
-        for (let index = 0; index < withCost.length; index += 1) {
-          const draft = withCost[index] as VariantDraft;
+        for (let i = 0; i < withCost.length; i += 1) {
+          const draft = withCost[i] as VariantDraft;
+          const label = draft.sku.trim().length > 0 ? `SKU ${draft.sku.trim()}` : `variant ${i + 1}`;
           const amount = Number(draft.manualCost);
           if (!Number.isFinite(amount) || amount <= 0) {
-            failures.push(`variant ${index + 1}: cost must be greater than zero`);
+            failures.push(`${label}: cost must be greater than zero`);
             continue;
           }
-          const variantId = product.variants[index]?.shopifyVariantId ?? null;
+          const variantId = matchCreatedVariant(draft, product.variants, parsedOptions);
+          if (variantId === null) {
+            failures.push(`${label}: could not match it to a created variant`);
+            continue;
+          }
           try {
             await apiPut<unknown>('/costs', {
               productId: product.shopifyProductId,
@@ -187,14 +218,12 @@ function NewProductWizard() {
               note: 'Entered when the product was created.',
             });
           } catch (caught) {
-            failures.push(
-              `variant ${index + 1}: ${caught instanceof ApiError ? caught.message : 'failed'}`,
-            );
+            failures.push(`${label}: ${caught instanceof ApiError ? caught.message : 'failed'}`);
           }
         }
         if (failures.length > 0) {
           setCostWarning(
-            `The product was created, but some manual costs were not saved: ${failures.join('; ')}. Set them from the product page.`,
+            `Product created successfully. Manual supplier costs failed to save for ${failures.length} variant(s): ${failures.join('; ')}. Set them from the product page.`,
           );
         }
       }
@@ -209,11 +238,24 @@ function NewProductWizard() {
     return (
       <Card title="Product created">
         <div className="stack">
-          <Callout tone="info" title={`Created as ${created.status}`}>
-            <strong>{created.title}</strong> now exists in Shopify.
-            {created.status !== 'ACTIVE' &&
-              ' It is not visible to customers until you publish it.'}
-          </Callout>
+          {created.published ? (
+            <Callout tone="info" title="Created and published">
+              <strong>{created.title}</strong> is ACTIVE and published to the Online Store, so
+              customers can see it.
+            </Callout>
+          ) : created.publishError !== null ? (
+            // Publish was requested but failed: the backend left it DRAFT. Do
+            // NOT say customers can see it.
+            <Callout tone="warning" title="Created as DRAFT — publication failed">
+              <strong>{created.title}</strong> exists but was left as DRAFT and is NOT visible to
+              customers: {created.publishError} Open the product to retry publishing.
+            </Callout>
+          ) : (
+            <Callout tone="info" title="Created as DRAFT">
+              <strong>{created.title}</strong> now exists in Shopify as a DRAFT. It is not visible
+              to customers until you publish it from the product page.
+            </Callout>
+          )}
           {costWarning !== null && (
             <Callout tone="warning" title="Manual costs incomplete">
               {costWarning}
@@ -254,9 +296,7 @@ function NewProductWizard() {
       </Card>
 
       {error !== null && (
-        <Callout tone="danger" title={error.code}>
-          {error.message}
-        </Callout>
+        <ErrorCallout error={error} />
       )}
 
       {step === 0 && (
@@ -579,7 +619,9 @@ function NewProductWizard() {
           <div className="stack">
             <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
               <Badge tone={publish ? 'warning' : 'info'} dot>
-                {publish ? 'will be ACTIVE (visible)' : 'will be DRAFT (hidden)'}
+                {publish
+                  ? 'created DRAFT, then published + activated'
+                  : 'will be DRAFT (hidden)'}
               </Badge>
               <Badge tone="neutral">{pricedVariants} priced variant(s)</Badge>
               <Badge tone="neutral">{parsedOptions.length} option(s)</Badge>
@@ -606,7 +648,7 @@ function NewProductWizard() {
                 />
                 <span className="muted">
                   {publish
-                    ? 'ACTIVE — customers can see it as soon as it is created'
+                    ? 'Publish to the Online Store and activate. If publication fails the product is left DRAFT (never ACTIVE-but-invisible).'
                     : 'DRAFT — recommended, review it first'}
                 </span>
               </label>
@@ -640,6 +682,52 @@ function NewProductWizard() {
       </Card>
     </div>
   );
+}
+
+/**
+ * Maps a form variant to the real Shopify variant id, deterministically.
+ *
+ * Never assumes the created order matches the form order (Shopify does not
+ * guarantee it). SKU is the strongest key; option values are the fallback; a
+ * single-variant product with no options resolves to the one created variant.
+ * Returns null when no confident match exists, so the caller reports a partial
+ * failure instead of writing a cost against the wrong variant.
+ */
+function matchCreatedVariant(
+  draft: VariantDraft,
+  created: CreatedVariant[],
+  options: { name: string; values: string[] }[],
+): string | null {
+  const sku = draft.sku.trim();
+  if (sku.length > 0) {
+    const bySku = created.find((variant) => (variant.sku ?? '') === sku);
+    if (bySku !== undefined) return bySku.shopifyVariantId;
+  }
+
+  if (options.length > 0) {
+    const expected = options
+      .map((option, index) => ({ name: option.name, value: (draft.optionValues[index] ?? '').trim() }))
+      .filter((pair) => pair.value.length > 0);
+    if (expected.length > 0) {
+      const byOptions = created.find((variant) =>
+        expected.every((pair) =>
+          variant.optionValues.some(
+            (selected) =>
+              selected.name === pair.name &&
+              selected.value.toLowerCase() === pair.value.toLowerCase(),
+          ),
+        ),
+      );
+      if (byOptions !== undefined) return byOptions.shopifyVariantId;
+    }
+  }
+
+  // Single-variant product with no options: exactly one created variant.
+  if (options.length === 0 && created.length === 1) {
+    return created[0]?.shopifyVariantId ?? null;
+  }
+
+  return null;
 }
 
 /** Projected margin for the cost step, computed only from real numbers. */

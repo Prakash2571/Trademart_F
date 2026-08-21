@@ -23,10 +23,15 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
-import { Badge, Callout, Card, ErrorState, Modal, PageHeader } from '@/components/ui';
+import { Badge, Callout, Card, ErrorCallout, ErrorState, Modal, PageHeader } from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
+import {
+  describeCapability,
+  useCapabilities,
+  type CapabilityVerdict,
+} from '@/lib/capabilities';
 import { formatDateTime, formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
   LocationDto,
@@ -71,6 +76,11 @@ function ProductDetail({ productId }: { productId: string }) {
     `/costs?productId=${encoded}`,
   );
 
+  const caps = useCapabilities();
+  const writeVerdict = describeCapability(caps.data, 'products.write');
+  const inventoryVerdict = describeCapability(caps.data, 'inventory.write');
+  const publishVerdict = describeCapability(caps.data, 'products.publish');
+
   const costIndex = useMemo(() => {
     const index = new Map<string, ManualCostRecord>();
     for (const cost of costs.data?.costs ?? []) {
@@ -103,15 +113,123 @@ function ProductDetail({ productId }: { productId: string }) {
   return (
     <div className="stack">
       <SummaryCard product={data} />
-      <DetailsEditor product={data} onSaved={refresh} />
-      <TagEditor product={data} onSaved={refresh} />
+      <PublicationSection product={data} verdict={publishVerdict} />
+      <DetailsEditor product={data} verdict={writeVerdict} onSaved={refresh} />
+      <TagEditor product={data} verdict={writeVerdict} onSaved={refresh} />
       <VariantEditor
         product={data}
+        verdict={writeVerdict}
         costIndex={costIndex}
         onSaved={refresh}
       />
-      <InventoryEditor product={data} onSaved={refresh} />
+      <InventoryEditor product={data} verdict={inventoryVerdict} onSaved={refresh} />
     </div>
+  );
+}
+
+/* ------------------------------------------------------------ publication -- */
+
+/**
+ * Publication state + publish/unpublish. Publishing is distinct from ACTIVE
+ * status: a product can be ACTIVE yet invisible because it is not on a channel.
+ * The controls are capability-gated on products.publish.
+ */
+function PublicationSection({
+  product,
+  verdict,
+}: {
+  product: ProductDto;
+  verdict: CapabilityVerdict;
+}) {
+  const encoded = encodeURIComponent(product.shopifyProductId);
+  const state = useApi<{ publications: { publicationId: string; name: string; isPublished: boolean }[] }>(
+    `/shopify/products/${encoded}/publications`,
+  );
+  const [busy, setBusy] = useState<'publish' | 'unpublish' | null>(null);
+  const [error, setError] = useState<ApiError | null>(null);
+
+  const act = async (kind: 'publish' | 'unpublish') => {
+    setBusy(kind);
+    setError(null);
+    try {
+      await apiPost<unknown>(`/shopify/products/${encoded}/${kind}`, {});
+      state.refetch();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught : new ApiError('UNKNOWN', `${kind} failed.`, 0));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const publications = state.data?.publications ?? [];
+  const publishedOn = publications.filter((entry) => entry.isPublished);
+
+  return (
+    <Card
+      title="Publication"
+      actions={
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            className="btn btn--primary btn--sm"
+            onClick={() => act('publish')}
+            disabled={busy !== null || !verdict.available}
+            title={verdict.reason ?? 'Publish to the Online Store'}
+          >
+            {busy === 'publish' ? 'Publishing…' : 'Publish to Online Store'}
+          </button>
+          <button
+            className="btn btn--sm"
+            onClick={() => act('unpublish')}
+            disabled={busy !== null || !verdict.available}
+            title={verdict.reason ?? 'Remove from the Online Store'}
+          >
+            {busy === 'unpublish' ? 'Unpublishing…' : 'Unpublish'}
+          </button>
+        </div>
+      }
+    >
+      <div className="stack">
+        {!verdict.available && (
+          <Callout tone="warning" title="Publishing is unavailable">
+            {verdict.reason}
+          </Callout>
+        )}
+        {error !== null && (
+          <ErrorCallout error={error} />
+        )}
+        <p className="muted">
+          A product&apos;s ACTIVE status only clears the draft flag. It is visible to customers
+          only when published to a sales channel.
+        </p>
+        {state.loading && state.data === null ? (
+          <p className="muted">Loading publication state…</p>
+        ) : publications.length === 0 ? (
+          <p className="muted">
+            {state.error !== null
+              ? `Could not read publication state: ${state.error.message}`
+              : 'Not published to any channel.'}
+          </p>
+        ) : (
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            {publications.map((entry) => (
+              <Badge
+                key={entry.publicationId}
+                tone={entry.isPublished ? 'success' : 'neutral'}
+                dot={entry.isPublished}
+              >
+                {entry.name}: {entry.isPublished ? 'published' : 'not published'}
+              </Badge>
+            ))}
+          </div>
+        )}
+        {publishedOn.length === 0 && publications.length > 0 && (
+          <Callout tone="info" title="Active but not visible">
+            This product is not published on any channel, so customers cannot see it even if its
+            status is ACTIVE.
+          </Callout>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -169,9 +287,11 @@ function SummaryCard({ product }: { product: ProductDto }) {
 
 function DetailsEditor({
   product,
+  verdict,
   onSaved,
 }: {
   product: ProductDto;
+  verdict: CapabilityVerdict;
   onSaved: () => void;
 }) {
   const [title, setTitle] = useState(product.title);
@@ -232,8 +352,8 @@ function DetailsEditor({
         <button
           className="btn btn--primary btn--sm"
           onClick={save}
-          disabled={!dirty || busy}
-          title={dirty ? undefined : 'No changes to save'}
+          disabled={!dirty || busy || !verdict.available}
+          title={verdict.reason ?? (dirty ? undefined : 'No changes to save')}
         >
           {busy ? 'Saving…' : 'Save details'}
         </button>
@@ -241,9 +361,7 @@ function DetailsEditor({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {done && !dirty && (
           <Callout tone="info" title="Saved">
@@ -314,7 +432,15 @@ function DetailsEditor({
 
 /* ------------------------------------------------------------------- tags -- */
 
-function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => void }) {
+function TagEditor({
+  product,
+  verdict,
+  onSaved,
+}: {
+  product: ProductDto;
+  verdict: CapabilityVerdict;
+  onSaved: () => void;
+}) {
   const [newTag, setNewTag] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -340,9 +466,7 @@ function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => v
     <Card title="Tags">
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         <p className="muted">
           Tags are added and removed individually. Trademart never replaces the whole tag list,
@@ -358,9 +482,9 @@ function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => v
                 <button
                   className="btn btn--sm"
                   onClick={() => mutate({ removeTags: [tag] }, `remove:${tag}`)}
-                  disabled={busy !== null}
+                  disabled={busy !== null || !verdict.available}
                   aria-label={`Remove tag ${tag}`}
-                  title={`Remove ${tag}`}
+                  title={verdict.reason ?? `Remove ${tag}`}
                 >
                   ×
                 </button>
@@ -380,7 +504,8 @@ function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => v
           <button
             className="btn btn--sm"
             onClick={() => mutate({ addTags: [newTag.trim()] }, 'add')}
-            disabled={busy !== null || newTag.trim().length === 0}
+            disabled={busy !== null || newTag.trim().length === 0 || !verdict.available}
+            title={verdict.reason ?? undefined}
           >
             {busy === 'add' ? 'Adding…' : 'Add tag'}
           </button>
@@ -394,10 +519,12 @@ function TagEditor({ product, onSaved }: { product: ProductDto; onSaved: () => v
 
 function VariantEditor({
   product,
+  verdict,
   costIndex,
   onSaved,
 }: {
   product: ProductDto;
+  verdict: CapabilityVerdict;
   costIndex: Map<string, ManualCostRecord>;
   onSaved: () => void;
 }) {
@@ -463,11 +590,12 @@ function VariantEditor({
         <button
           className="btn btn--primary btn--sm"
           onClick={save}
-          disabled={busy || pending.length === 0}
+          disabled={busy || pending.length === 0 || !verdict.available}
           title={
-            pending.length === 0
+            verdict.reason ??
+            (pending.length === 0
               ? 'Change a price first'
-              : `Write ${pending.length} variant price change(s) to Shopify`
+              : `Write ${pending.length} variant price change(s) to Shopify`)
           }
         >
           {busy ? 'Saving…' : `Save price to Shopify${pending.length > 0 ? ` (${pending.length})` : ''}`}
@@ -476,9 +604,7 @@ function VariantEditor({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         <p className="muted">
           Editing a price here only changes this form. Nothing reaches Shopify until you press
@@ -607,9 +733,11 @@ function VariantEditor({
 
 function InventoryEditor({
   product,
+  verdict,
   onSaved,
 }: {
   product: ProductDto;
+  verdict: CapabilityVerdict;
   onSaved: () => void;
 }) {
   const locations = useApi<{ locations: LocationDto[] }>('/shopify/locations');
@@ -645,6 +773,7 @@ function InventoryEditor({
     variant.inventoryItemId !== null &&
     selectedLocation !== '' &&
     quantityValid &&
+    verdict.available &&
     !busy;
 
   const submit = async () => {
@@ -672,15 +801,18 @@ function InventoryEditor({
   return (
     <Card title="Inventory">
       <div className="stack">
+        {!verdict.available && (
+          <Callout tone="warning" title="Inventory editing is unavailable">
+            {verdict.reason}
+          </Callout>
+        )}
         {locations.error !== null && (
           <Callout tone="warning" title={locations.error.code}>
             Could not list locations: {locations.error.message}
           </Callout>
         )}
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
-          </Callout>
+          <ErrorCallout error={error} />
         )}
         {done !== null && (
           <Callout tone="info" title="Stock updated">

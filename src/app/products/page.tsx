@@ -42,12 +42,27 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [selected, setSelected] = useState<ProductDto | null>(null);
+  // Cursors used to REACH the current page (empty = first page). Shopify paging
+  // is cursor-based, so this stack lets us step forward with meta.endCursor and
+  // back by popping. Reset whenever the search changes.
+  const [cursorStack, setCursorStack] = useState<string[]>([]);
+  const currentCursor = cursorStack[cursorStack.length - 1];
 
   const path = useMemo(
-    () => `/shopify/products${query({ limit: 50, query: appliedSearch || undefined })}`,
-    [appliedSearch],
+    () =>
+      `/shopify/products${query({
+        limit: 50,
+        query: appliedSearch || undefined,
+        cursor: currentCursor,
+      })}`,
+    [appliedSearch, currentCursor],
   );
   const { data, meta, loading, error, refetch } = useApi<ProductDto[]>(path);
+
+  const applySearch = (value: string) => {
+    setAppliedSearch(value);
+    setCursorStack([]); // a new search starts at the first page
+  };
 
   const columns: Column<ProductDto>[] = [
     {
@@ -156,7 +171,7 @@ export default function ProductsPage() {
           className="toolbar"
           onSubmit={(event) => {
             event.preventDefault();
-            setAppliedSearch(search.trim());
+            applySearch(search.trim());
           }}
         >
           <input
@@ -176,7 +191,7 @@ export default function ProductsPage() {
               className="btn btn--sm"
               onClick={() => {
                 setSearch('');
-                setAppliedSearch('');
+                applySearch('');
               }}
             >
               Clear
@@ -191,9 +206,34 @@ export default function ProductsPage() {
         <Card
           bodyless
           footer={
-            meta?.hasNextPage
-              ? 'More products exist. Pagination beyond the first page is not implemented in this milestone.'
-              : undefined
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => setCursorStack((stack) => stack.slice(0, -1))}
+                disabled={loading || cursorStack.length === 0}
+              >
+                ← Previous
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() =>
+                  setCursorStack((stack) =>
+                    meta?.endCursor ? [...stack, meta.endCursor] : stack,
+                  )
+                }
+                disabled={loading || !meta?.hasNextPage || !meta?.endCursor}
+              >
+                Next →
+              </button>
+              <div className="toolbar__spacer" />
+              <span className="muted" style={{ fontSize: 12.5 }}>
+                Page {cursorStack.length + 1}
+                {meta ? ` · ${meta.count} on this page` : ''}
+                {meta && !meta.hasNextPage ? ' · last page' : ''}
+              </span>
+            </div>
           }
         >
           <DataTable

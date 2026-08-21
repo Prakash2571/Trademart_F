@@ -12,20 +12,33 @@
  * the tag removal and the publish stay in one place on the backend.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
-import { Badge, Callout, Card, EmptyState, ErrorState, PageHeader } from '@/components/ui';
+import { Badge, Callout, Card, EmptyState, ErrorCallout, ErrorState, PageHeader } from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
-import { ApiError, apiPatch, apiPost } from '@/lib/api';
+import { ApiError, apiPatch, apiPost, newIdempotencyKey } from '@/lib/api';
+import {
+  describeCapability,
+  useCapabilities,
+  type CapabilityVerdict,
+} from '@/lib/capabilities';
 import { formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
+  ApproveResult,
   AutomationStatus,
   ManualCostRecord,
   ProductDto,
   ProductVariantDto,
 } from '@/lib/types';
+
+/** Title for the Approve button, explaining why it is disabled. */
+function approveTitle(writesEnabled: boolean, publish: CapabilityVerdict): string {
+  if (!writesEnabled) return 'Enable writes on the backend first (AUTOMATION_ENABLED=true)';
+  if (!publish.available) return publish.reason ?? 'Publishing is unavailable';
+  return 'Removes the review tag, sets the product ACTIVE, and publishes it to the Online Store';
+}
 
 /** The tag automation applies to hold a product for review. */
 const REVIEW_TAG = 'trademart:needs-review';
@@ -47,11 +60,18 @@ export default function ProductReviewPage() {
 function ReviewConsole() {
   // Shopify search syntax. The tag contains a colon, so it must be quoted.
   const listPath = `/shopify/products?limit=50&query=${encodeURIComponent(`tag:'${REVIEW_TAG}'`)}`;
-  const products = useApi<{ products: ProductDto[] }>(listPath);
+  // GET /api/shopify/products sends the ProductDto[] directly as `data` (the
+  // regular Products page relies on this); pagination lives in `meta`. The old
+  // useApi<{ products }> here read `.products` off an array and always rendered
+  // an empty queue.
+  const products = useApi<ProductDto[]>(listPath);
   const status = useApi<AutomationStatus>('/automation/status');
   const costs = useApi<{ costs: ManualCostRecord[] }>('/costs');
+  const caps = useCapabilities();
 
   const writesEnabled = status.data?.writesEnabled ?? false;
+  const writeVerdict = describeCapability(caps.data, 'products.write');
+  const publishVerdict = describeCapability(caps.data, 'products.publish');
 
   /** Manual costs keyed by "productId|variantId" for quick lookup. */
   const costIndex = useMemo(() => {
@@ -78,7 +98,7 @@ function ReviewConsole() {
     );
   }
 
-  const list = products.data?.products ?? [];
+  const list = products.data ?? [];
 
   return (
     <div className="stack">
@@ -87,6 +107,13 @@ function ReviewConsole() {
           Publishing a product writes to the live store, which needs{' '}
           <span className="mono">AUTOMATION_ENABLED=true</span> on the backend. You can still
           inspect items, set manual costs, and edit products.
+        </Callout>
+      )}
+
+      {writesEnabled && !publishVerdict.available && (
+        <Callout tone="warning" title="Publishing is unavailable">
+          {publishVerdict.reason} Approve &amp; publish is disabled until this is resolved; other
+          actions still work.
         </Callout>
       )}
 
@@ -109,6 +136,8 @@ function ReviewConsole() {
           key={product.shopifyProductId}
           product={product}
           writesEnabled={writesEnabled}
+          writeVerdict={writeVerdict}
+          publishVerdict={publishVerdict}
           costIndex={costIndex}
           onChanged={() => {
             products.refetch();
@@ -125,17 +154,33 @@ function ReviewConsole() {
 function ReviewItem({
   product,
   writesEnabled,
+  writeVerdict,
+  publishVerdict,
   costIndex,
   onChanged,
 }: {
   product: ProductDto;
   writesEnabled: boolean;
+  writeVerdict: CapabilityVerdict;
+  publishVerdict: CapabilityVerdict;
   costIndex: Map<string, ManualCostRecord>;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  const [partial, setPartial] = useState<string | null>(null);
   const [costTarget, setCostTarget] = useState<ProductVariantDto | 'product' | null>(null);
+
+  /**
+   * Per-approval idempotency key.
+   *
+   * Deliberately NOT a deterministic `approve-${productId}`: a permanent key would
+   * make a SECOND, intentional approval weeks later (after the product was
+   * unpublished and needs re-approving) silently replay the first result instead
+   * of running. This key covers one approval attempt and its retries, then resets
+   * on success so a later re-approval is a genuinely new operation.
+   */
+  const approveKeyRef = useRef<string | null>(null);
 
   const currency =
     product.minPrice?.currencyCode ?? product.variants[0]?.price?.currencyCode ?? 'GBP';
@@ -145,10 +190,29 @@ function ReviewItem({
   const approve = async () => {
     setBusy('approve');
     setError(null);
+    setPartial(null);
+    if (approveKeyRef.current === null) {
+      approveKeyRef.current = newIdempotencyKey();
+    }
     try {
-      // Reuses the backend's approve logic: removes the review/hidden tags and
-      // sets the product ACTIVE. Not reimplemented here.
-      await apiPost<unknown>('/automation/approve', { productId: product.shopifyProductId });
+      // Backend removes review/hidden tags, sets ACTIVE, and publishes to the
+      // Online Store. Activation and publication are reported separately.
+      const result = await apiPost<ApproveResult>(
+        '/automation/approve',
+        { productId: product.shopifyProductId },
+        { idempotencyKey: approveKeyRef.current },
+      );
+      // Approval landed; release the key so a future re-approval is a new action.
+      approveKeyRef.current = null;
+      if (!result.data.published) {
+        // Publication failed, so the backend kept the product DRAFT and in the
+        // review queue. Do NOT imply it was activated or is visible.
+        setPartial(
+          `Not published${
+            result.data.publishError !== null ? `: ${result.data.publishError}` : ''
+          }. The product was left as DRAFT and stays in this review queue, so nothing is visible to customers. Retry, or check the write_publications scope.`,
+        );
+      }
       onChanged();
     } catch (caught) {
       setError(
@@ -210,26 +274,30 @@ function ReviewItem({
           >
             Set manual cost
           </button>
-          <button className="btn btn--sm" onClick={keepDraft} disabled={busy !== null}>
+          <button
+            className="btn btn--sm"
+            onClick={keepDraft}
+            disabled={busy !== null || !writeVerdict.available}
+            title={writeVerdict.reason ?? 'Pin to DRAFT and drop the review tag'}
+          >
             {busy === 'draft' ? 'Saving…' : 'Keep draft'}
           </button>
           <button
             className="btn btn--sm"
             onClick={excludeFromAutomation}
-            disabled={busy !== null}
-            title={`Adds the ${NO_AUTOMATION_TAG} tag so automation never touches this product`}
+            disabled={busy !== null || !writeVerdict.available}
+            title={
+              writeVerdict.reason ??
+              `Adds the ${NO_AUTOMATION_TAG} tag so automation never touches this product`
+            }
           >
             {busy === 'exclude' ? 'Saving…' : 'Exclude from automation'}
           </button>
           <button
             className="btn btn--primary btn--sm"
             onClick={approve}
-            disabled={busy !== null || !writesEnabled}
-            title={
-              writesEnabled
-                ? 'Removes the review tag and sets the product ACTIVE'
-                : 'Enable writes on the backend first (AUTOMATION_ENABLED=true)'
-            }
+            disabled={busy !== null || !writesEnabled || !publishVerdict.available}
+            title={approveTitle(writesEnabled, publishVerdict)}
           >
             {busy === 'approve' ? 'Approving…' : 'Approve & publish'}
           </button>
@@ -238,8 +306,11 @@ function ReviewItem({
     >
       <div className="stack">
         {error !== null && (
-          <Callout tone="danger" title={error.code}>
-            {error.message}
+          <ErrorCallout error={error} />
+        )}
+        {partial !== null && (
+          <Callout tone="warning" title="Kept in review — publication failed">
+            {partial}
           </Callout>
         )}
 
