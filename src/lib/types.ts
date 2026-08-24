@@ -1158,3 +1158,419 @@ export interface DropshipSettings {
     deliveryDelayDays: number;
   };
 }
+
+
+/* ===========================================================================
+ * Pricing settings (PUT /api/dropshipping/settings)
+ * ======================================================================== */
+
+/**
+ * PriceRounding is declared once, further up, for the automation rules. The pricing
+ * policy uses the same three strategies deliberately - charm pricing must mean the same
+ * thing whether automation applies it or Research recommends it - so it is reused rather
+ * than redeclared.
+ */
+export type PricingStrategy = 'TARGET_MARGIN' | 'MARKUP_MULTIPLIER' | 'FIXED_UPLIFT';
+
+export interface PricingPolicy {
+  strategy: PricingStrategy;
+  targetMarginPercentage: number;
+  markupMultiplier: number;
+  fixedUplift: number;
+  paymentFeePercentage: number;
+  shopifyFeePercentage: number;
+  advertisingAllowancePercentage: number;
+  otherCostPerOrder: number;
+  minimumMarginPercentage: number;
+  minimumProfitAmount: number;
+  rounding: PriceRounding;
+}
+
+/**
+ * What PUT /api/dropshipping/settings returns.
+ *
+ * `stored` distinguishes settings an operator actually saved from the documented
+ * defaults. Without it the screen cannot tell "you configured this" from "nobody has
+ * configured anything", which are different situations.
+ */
+export interface EffectiveSettings extends DropshipSettings {
+  pricing: Partial<PricingPolicy>;
+  stored: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  /** The policy these settings produce, echoed so the consequence is visible. */
+  effectivePricingPolicy: PricingPolicy;
+}
+
+/* ===========================================================================
+ * Product research
+ * ======================================================================== */
+
+export type Freshness = 'FRESH' | 'AGING' | 'STALE' | 'UNKNOWN';
+
+export type ScoreFactorKey =
+  | 'demand'
+  | 'trend'
+  | 'profitability'
+  | 'storeFit'
+  | 'competition'
+  | 'shipping'
+  | 'seasonality'
+  | 'fulfillmentQuality';
+
+export type Recommendation =
+  | 'STRONG_CANDIDATE'
+  | 'GOOD_CANDIDATE'
+  | 'WATCH'
+  | 'WEAK'
+  | 'REJECT';
+
+export type CandidateStatus =
+  | 'NEW'
+  | 'ANALYZED'
+  | 'WATCHING'
+  | 'SELECTED'
+  | 'PUSHED_TO_SHOPIFY'
+  | 'REJECTED';
+
+export type SeasonState =
+  | 'EARLY'
+  | 'RISING'
+  | 'PEAK'
+  | 'FALLING'
+  | 'OFF_SEASON'
+  | 'UNKNOWN';
+
+export type CandidateSource =
+  | 'MANUAL'
+  | 'TRADELLE'
+  | 'SHOPIFY_PERFORMANCE'
+  | 'GOOGLE_ADS'
+  | 'GOOGLE_TRENDS';
+
+/** One figure behind a score, with where it came from and how old it is. */
+export interface EvidenceItem {
+  code: string;
+  label: string;
+  source: string;
+  observedAt: string | null;
+  fetchedAt: string | null;
+  freshness: Freshness;
+  value: string | null;
+  confidence: DataConfidence;
+}
+
+/**
+ * One factor's contribution.
+ *
+ * `value` null means the factor was NOT scored and was EXCLUDED from the average. It
+ * does not mean zero, and the UI must never render it as one.
+ */
+export interface FactorScore {
+  factor: ScoreFactorKey;
+  value: number | null;
+  confidence: DataConfidence;
+  reasons: string[];
+  risks: string[];
+  evidence: EvidenceItem[];
+}
+
+export interface TargetMarket {
+  countryCode: string;
+  region: string | null;
+  horizonDays: number;
+}
+
+export interface CandidateCommercials {
+  supplierCost: number | null;
+  supplierCurrency: string | null;
+  shippingCost: number | null;
+  shippingCurrency: string | null;
+  shippingDays: number | null;
+  expectedSellingPrice: number | null;
+  expectedSellingCurrency: string | null;
+  costObservedAt: string | null;
+}
+
+/** Market figures an operator READ elsewhere and typed in. */
+export interface ManualResearchEntry {
+  averageMonthlySearches: number | null;
+  momentumPercentage: number | null;
+  competitionIndex: number | null;
+  competitorCount: number | null;
+  seasonState: SeasonState;
+  peakMonths: number[] | null;
+  geography: { countryCode: string | null; region: string | null };
+  /** When they READ the figure, which is what freshness ages from. */
+  observedAt: string | null;
+  sourceNote: string | null;
+}
+
+export interface ScoreHistoryEntry {
+  at: string;
+  overallScore: number;
+  confidenceScore: number;
+  recommendation: Recommendation;
+  note: string | null;
+}
+
+export interface ProductCandidate {
+  id: string;
+  source: CandidateSource;
+  sourceProductId: string | null;
+  sourceUrl: string | null;
+  title: string;
+  category: string | null;
+  imageUrl: string | null;
+  keywords: string[];
+  market: TargetMarket;
+  commercials: CandidateCommercials;
+  manualResearch: ManualResearchEntry;
+  factors: FactorScore[];
+  /**
+   * How good the OPPORTUNITY looks. Null means not scored - never a low score.
+   *
+   * Kept strictly separate from confidenceScore. The two are never blended, because a
+   * single number cannot distinguish a mediocre product from a possibly-excellent one
+   * nobody has data for.
+   */
+  overallScore: number | null;
+  /** How much the DATA behind the opinion can be trusted. */
+  confidenceScore: number | null;
+  recommendation: Recommendation | null;
+  seasonState: SeasonState;
+  reasons: string[];
+  risks: string[];
+  evidence: EvidenceItem[];
+  freshness: Freshness;
+  status: CandidateStatus;
+  /**
+   * The push lifecycle, ORTHOGONAL to status. Read this - not status - to know whether a
+   * push may begin. Mirrors the backend's PushState.
+   *
+   *   IDLE             nothing in flight
+   *   IN_PROGRESS      a push holds the claim right now; a second must not start
+   *   SUCCEEDED        a draft was created
+   *   SAFETY_INCIDENT  a product exists that could not be verified hidden - needs a human
+   */
+  pushState: PushState;
+  /** Set once a Shopify DRAFT exists. Never implies it is published. */
+  pushedShopifyProductId: string | null;
+  /** Why the last push ended in SAFETY_INCIDENT. Null in every other state. */
+  pushSafetyReason: string | null;
+  watchUntil: string | null;
+  scoreHistory: ScoreHistoryEntry[];
+  notes: string | null;
+  createdAt: string;
+  analyzedAt: string | null;
+  updatedAt: string;
+}
+
+export type PushState = 'IDLE' | 'IN_PROGRESS' | 'SUCCEEDED' | 'SAFETY_INCIDENT';
+
+/**
+ * One yes/no decision about an action, with the operator-facing reason when it is no.
+ *
+ * Computed by the backend (candidate.transitions.ts) and sent down so the UI does not keep
+ * a second copy of the transition rules that could drift from the routes that enforce them.
+ */
+export interface ActionDecision {
+  allowed: boolean;
+  reason: string | null;
+}
+
+/** What the backend currently permits for a candidate. Keyed the same as the buttons. */
+export interface AllowedActions {
+  watch: ActionDecision;
+  select: ActionDecision;
+  reject: ActionDecision;
+  push: ActionDecision;
+  analyze: ActionDecision;
+}
+
+/* --------------------------------------------------------------- pricing -- */
+
+export type PricingScenarioName = 'CONSERVATIVE' | 'BALANCED' | 'PREMIUM';
+
+export interface PricingBreakdownEntry {
+  key: string;
+  label: string;
+  amount: number;
+  provided: boolean;
+}
+
+export interface PricingScenario {
+  name: PricingScenarioName;
+  label: string;
+  /** Why an operator would choose this position. */
+  intent: string;
+  price: number;
+  marginPercentage: number | null;
+  contribution: number;
+  returnOnCostPercentage: number | null;
+  /** False when a commercial floor is breached. Shown anyway, marked. */
+  viable: boolean;
+  guardBreaches: string[];
+  minimumViablePrice: number | null;
+  reasons: string[];
+  breakdown: PricingBreakdownEntry[];
+}
+
+export interface PriceRecommendation {
+  currencyCode: string | null;
+  landedCost: number | null;
+  shippingIncluded: boolean;
+  policy: PricingPolicy;
+  scenarios: PricingScenario[];
+  recommended: PricingScenarioName | null;
+  blockedReason: string | null;
+  warnings: string[];
+  notes: string[];
+}
+
+/* ------------------------------------------------------------- providers -- */
+
+export type ResearchCapability =
+  | 'demand'
+  | 'trend'
+  | 'competition'
+  | 'seasonality'
+  | 'storePerformance'
+  | 'fulfillmentHistory'
+  | 'supplierCommercials';
+
+export interface CapabilityAvailability {
+  capability: ResearchCapability;
+  available: boolean;
+  providers: string[];
+  /** Why it is unavailable, in each provider's own words. */
+  limitations: string[];
+}
+
+export type TradelleProviderMode = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API_UNAVAILABLE';
+
+export interface ResearchIntegrationDescriptor {
+  key: string;
+  displayName: string;
+  status: 'IMPLEMENTED' | 'PLACEHOLDER';
+  requiredEnv: string[];
+  documentation: string;
+}
+
+/** GET /api/intelligence/capabilities */
+export interface ResearchCapabilitiesReport {
+  capabilities: CapabilityAvailability[];
+  tradelle: {
+    mode: TradelleProviderMode;
+    modes: Record<TradelleProviderMode, string>;
+    documentation: string;
+  };
+  unbuiltIntegrations: ResearchIntegrationDescriptor[];
+}
+
+export interface SignalProvenance {
+  capability: ResearchCapability;
+  providerName: string;
+  supplied: boolean;
+  reason: string | null;
+}
+
+/** POST /api/intelligence/candidates/:id/analyze */
+export interface AnalyzeResult {
+  candidate: ProductCandidate;
+  pricing: PriceRecommendation;
+  provenance: SignalProvenance[];
+  /** Capabilities nothing could supply. */
+  unavailable: ResearchCapability[];
+  warnings: string[];
+  capabilities: CapabilityAvailability[];
+  /**
+   * The hash the operator must send back with a push.
+   *
+   * It binds the exact decision they reviewed. If the recommendation or price moves before
+   * they push, the backend refuses with RECOMMENDATION_CHANGED rather than creating a
+   * product on a decision nobody approved.
+   */
+  decisionHash: string;
+  /** Whether the stored score no longer matches the candidate's current inputs. */
+  scoreIsStale: boolean;
+}
+
+/**
+ * The verified Shopify state of a pushed product.
+ *
+ * `visibleToCustomers` is the ONLY field that means a customer could see it - read back
+ * from Shopify, never inferred from `status`.
+ */
+export interface ShopifyProductState {
+  status: string | null;
+  published: boolean;
+  visibleToCustomers: boolean;
+}
+
+/**
+ * GET /api/intelligence/candidates/:id/decision - the current decision and its hash.
+ *
+ * Read immediately before a push. Computes a fresh analysis and PERSISTS NOTHING, so
+ * opening the confirmation dialog cannot move the stored score. The summary shown to the
+ * operator and the `decisionHash` sent with the push come from this one response, so what
+ * they confirm is provably what the hash covers.
+ */
+export interface CandidateDecision {
+  decisionHash: string;
+  candidate: ProductCandidate;
+  recommendation: Recommendation | null;
+  overallScore: number | null;
+  confidenceScore: number | null;
+  recommendationDowngraded: boolean;
+  pricing: PriceRecommendation;
+  policy: PricingPolicy;
+  warnings: string[];
+  actions: AllowedActions;
+}
+
+/* ------------------------------------------------------------ duplicates -- */
+
+export type DuplicateStrength = 'EXACT' | 'LIKELY' | 'POSSIBLE';
+
+export interface DuplicateMatch {
+  target: 'SHOPIFY_PRODUCT' | 'CANDIDATE';
+  id: string;
+  title: string;
+  strength: DuplicateStrength;
+  reason: string;
+  /** True when this would stop a push unless explicitly overridden. */
+  blocking: boolean;
+}
+
+export interface DuplicateReport {
+  matches: DuplicateMatch[];
+  blocking: DuplicateMatch[];
+  summary: string | null;
+}
+
+/* ------------------------------------------------------------------ push -- */
+
+/**
+ * POST /api/intelligence/candidates/:id/push - creates a DRAFT, never publishes.
+ *
+ * Mirrors the backend orchestrator's PushAsDraftResult. `outcome` distinguishes a fresh
+ * create from a reconciliation of a product a crashed earlier attempt had already made;
+ * `listedPrice` is null on a reconcile because nothing was priced. `productState` carries
+ * the VERIFIED visibility, and `safetyIncident` is set when the product could not be
+ * confirmed hidden - which the API also signals with a RESEARCH_PUSH_SAFETY error, so this
+ * field is really for the audit-style display.
+ */
+export interface PushAsDraftResult {
+  candidate: ProductCandidate;
+  outcome: 'CREATED' | 'RECONCILED';
+  shopifyProductId: string;
+  productState: ShopifyProductState;
+  duplicates: DuplicateReport;
+  listedPrice: { amount: number; currencyCode: string | null; source: string } | null;
+  /** True when the candidate's supplier cost reached the new variant. */
+  costRecorded: boolean;
+  /** Set only when the product could not be verified hidden. Never an ordinary success. */
+  safetyIncident: string | null;
+  warnings: string[];
+}

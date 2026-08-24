@@ -18,6 +18,9 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: '◧' },
+  // Above Products deliberately: research is the step BEFORE a product exists. Decide
+  // what to sell, push it as a draft, and it appears in Products and the review queue.
+  { href: '/research', label: 'Research', icon: '⌕' },
   { href: '/products', label: 'Products', icon: '❑' },
   // Sits directly under Products: it is a product queue, and the draft/review
   // gate is worthless if nobody can find the queue it feeds.
@@ -26,6 +29,13 @@ const NAV_ITEMS: NavItem[] = [
   // Sits under Orders: it is the same Shopify orders, viewed through cost,
   // fulfillment state and supplier cash exposure rather than as raw records.
   { href: '/dropshipping', label: 'Dropshipping', icon: '⛟' },
+  // The order book itself, under the dashboard it summarises. Listed separately
+  // because an order that is not flagged for attention is otherwise unreachable.
+  { href: '/dropshipping/orders', label: 'Dropship orders', icon: '☰' },
+  // Configuration for the two above. Kept beside them rather than in Settings: these
+  // numbers decide what every dropshipping figure MEANS, so they belong next to the
+  // figures rather than in a general preferences screen.
+  { href: '/dropshipping/settings', label: 'Dropship settings', icon: '⚖' },
   { href: '/customers', label: 'Customers', icon: '☺' },
   { href: '/analytics', label: 'Analytics', icon: '◔' },
   { href: '/pricing', label: 'Pricing', icon: '%' },

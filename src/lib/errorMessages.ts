@@ -91,6 +91,48 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
     offerRefresh: true,
   },
 
+  // ---- Research push -------------------------------------------------------
+  RECOMMENDATION_CHANGED: {
+    title: 'The recommendation changed',
+    action:
+      'Nothing was created in Shopify. The score or price moved since you reviewed it, so review the updated analysis before creating the draft.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  RESEARCH_PUSH_IN_PROGRESS: {
+    title: 'A push is already running',
+    action:
+      'Another push for this candidate is in progress. Wait for it to finish rather than starting a second one - if it has genuinely stalled, it releases on its own after a couple of minutes.',
+    tone: 'info',
+    offerRetry: true,
+    offerRefresh: true,
+  },
+  RESEARCH_ALREADY_PUSHED: {
+    title: 'Already a draft in Shopify',
+    action:
+      'Nothing was created. This candidate already has a Shopify draft; pushing again would duplicate it. Edit the existing draft in Shopify instead.',
+    tone: 'info',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  PUSH_CLAIM_LOST: {
+    title: 'Another operation took over this push',
+    action:
+      'Nothing was created here. Another push or recovery operation took ownership of this candidate. Refresh the candidate to see its current state before retrying.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  RESEARCH_PUSH_SAFETY: {
+    title: 'A product may be visible - check Shopify now',
+    action:
+      'A Shopify product was created but Trademart could not confirm it is hidden. Open it in Shopify and unpublish it, then clear the incident. This is NOT an ordinary failure - a product exists.',
+    tone: 'danger',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+
   // ---- Publication ---------------------------------------------------------
   PUBLICATION_FAILED: {
     title: 'Could not publish to the Online Store',
@@ -278,6 +320,15 @@ export function isNoOpFailure(code: string): boolean {
     code === 'AUTOMATION_DISABLED' ||
     code === 'VALIDATION_ERROR' ||
     code === 'COST_UNKNOWN' ||
-    code === 'CURRENCY_MISMATCH'
+    code === 'CURRENCY_MISMATCH' ||
+    // A stale-decision refusal and an already-pushed/in-progress refusal all create
+    // nothing. RESEARCH_PUSH_SAFETY is deliberately EXCLUDED: a product WAS created there,
+    // so telling the operator "nothing changed" would be a dangerous lie.
+    code === 'RECOMMENDATION_CHANGED' ||
+    code === 'RESEARCH_ALREADY_PUSHED' ||
+    code === 'RESEARCH_PUSH_IN_PROGRESS' ||
+    // Ownership was taken over before this push created anything. Like the others here,
+    // and UNLIKE RESEARCH_PUSH_SAFETY (where a product exists), nothing was created.
+    code === 'PUSH_CLAIM_LOST'
   );
 }

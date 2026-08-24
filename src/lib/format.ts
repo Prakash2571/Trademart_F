@@ -46,6 +46,60 @@ export function formatNumber(value: number | null | undefined): string {
   return value.toLocaleString();
 }
 
+/** The outcome of parsing an operator-typed number. */
+export interface ParsedNumber {
+  /** null means the field was left blank, which is a legitimate "unknown". */
+  value: number | null;
+  /** A human message when the text was present but not a valid number. Null otherwise. */
+  error: string | null;
+}
+
+/**
+ * Parses a numeric form field STRICTLY, so bad input is rejected rather than silently
+ * reinterpreted.
+ *
+ * The trap this avoids: `Number("12x")` is NaN and `parseFloat("12x")` is 12. The old code
+ * used `Number(...)` then fell back to null on NaN, so "12x" became "unknown" - the
+ * operator's typo silently discarded the figure they thought they had entered, and a blank
+ * cost is exactly what the whole module treats as most dangerous. This returns an ERROR for
+ * "12x" instead, so the form can refuse and say so.
+ *
+ * Rules:
+ *   - blank (after trim) is value:null, error:null - unknown is allowed
+ *   - only an optional sign, digits and one optional decimal point are accepted; "12x",
+ *     "1,000", "1.2.3", "1e5", "  " with content all error
+ *   - by default negatives error (a negative cost or price is never meaningful); pass
+ *     allowNegative for fields like a declining trend percentage
+ *   - integer:true rejects a decimal point (transit days, search counts)
+ */
+export function parseNumericInput(
+  raw: string,
+  options: { allowNegative?: boolean; integer?: boolean; label?: string } = {},
+): ParsedNumber {
+  const label = options.label ?? 'This field';
+  const trimmed = raw.trim();
+  if (trimmed === '') return { value: null, error: null };
+
+  const pattern = options.integer ? /^-?\d+$/ : /^-?\d+(\.\d+)?$/;
+  if (!pattern.test(trimmed)) {
+    return {
+      value: null,
+      error: `${label} must be a ${options.integer ? 'whole number' : 'number'} (for example ${
+        options.integer ? '30' : '12.50'
+      }), or left blank. "${raw.trim()}" is not one.`,
+    };
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) {
+    return { value: null, error: `${label} is not a valid number.` };
+  }
+  if (!options.allowNegative && value < 0) {
+    return { value: null, error: `${label} cannot be negative.` };
+  }
+  return { value, error: null };
+}
+
 export function formatPercent(value: number | null | undefined): string {
   if (value === null || value === undefined) return NOT_AVAILABLE;
   return `${value.toFixed(2)}%`;
