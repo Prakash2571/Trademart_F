@@ -34,6 +34,9 @@ import type {
   ResearchCapability,
   ScoreFactorKey,
   SeasonState,
+  CurrentSourceability,
+  SupplierAvailability,
+  VariantCoverage,
 } from '@/lib/types';
 
 /* ------------------------------------------------------------------ labels -- */
@@ -163,6 +166,70 @@ export function FreshnessBadge({ freshness }: { freshness: Freshness }) {
       {FRESHNESS_LABEL[freshness]}
     </Badge>
   );
+}
+
+/* ---- supplier sourceability ---- */
+
+const SOURCEABILITY_TONE: Record<CurrentSourceability, BadgeTone> = {
+  SOURCEABLE: 'success',
+  PARTIALLY_SOURCEABLE: 'info',
+  NEEDS_RECHECK: 'warning',
+  NOT_SOURCEABLE: 'danger',
+  UNVERIFIED: 'warning',
+};
+
+const SOURCEABILITY_LABEL: Record<CurrentSourceability, string> = {
+  SOURCEABLE: '✓ Available',
+  PARTIALLY_SOURCEABLE: '◐ Partial',
+  NEEDS_RECHECK: '⚠ Needs recheck',
+  NOT_SOURCEABLE: '✕ Unavailable',
+  UNVERIFIED: '? Unverified',
+};
+
+const SOURCEABILITY_HINT: Record<CurrentSourceability, string> = {
+  SOURCEABLE: 'Verified available from the supplier, and the check is current.',
+  PARTIALLY_SOURCEABLE: 'Available, but some variants are unavailable or unverified.',
+  NEEDS_RECHECK: 'Was verified available, but the check is now stale. Re-verify before pushing.',
+  NOT_SOURCEABLE: 'The supplier cannot source this product. It cannot be pushed.',
+  UNVERIFIED: 'Availability has not been verified. Record a supplier verification before pushing.',
+};
+
+/**
+ * The supplier sourceability badge.
+ *
+ * `current` (the freshness-aware verdict) not `availability`: a check can be AVAILABLE yet
+ * NEEDS_RECHECK, and the operator needs the live verdict, not the historical value.
+ */
+export function SupplierBadge({
+  provider,
+  current,
+}: {
+  provider?: string | null;
+  current: CurrentSourceability;
+}) {
+  return (
+    <Badge tone={SOURCEABILITY_TONE[current]} title={SOURCEABILITY_HINT[current]}>
+      {provider && provider !== 'UNKNOWN' ? `${titleCase(provider)} ` : ''}
+      {SOURCEABILITY_LABEL[current]}
+    </Badge>
+  );
+}
+
+export const VARIANT_COVERAGE_LABEL: Record<VariantCoverage, string> = {
+  FULL: 'all variants available',
+  PARTIAL: 'some variants unavailable',
+  NONE: 'no variants available',
+  UNKNOWN: 'variants not itemised',
+};
+
+export const AVAILABILITY_LABEL: Record<SupplierAvailability, string> = {
+  AVAILABLE: 'Available',
+  UNAVAILABLE: 'Unavailable',
+  UNKNOWN: 'Unknown',
+};
+
+function titleCase(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
 export function SeasonBadge({ state }: { state: SeasonState }) {

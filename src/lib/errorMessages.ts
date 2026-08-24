@@ -124,6 +124,38 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
     offerRetry: false,
     offerRefresh: true,
   },
+  RESEARCH_SUPPLIER_UNAVAILABLE: {
+    title: 'The supplier cannot source this product',
+    action:
+      'Nothing was created. The supplier has this product (or all its variants) marked unavailable. A product that cannot be sourced is never pushed, however strong the market looks.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  RESEARCH_SUPPLIER_UNVERIFIED: {
+    title: 'Supplier availability not verified',
+    action:
+      'Nothing was created. Verify this product is currently available from the supplier (record a Tradelle verification) before pushing.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  RESEARCH_SUPPLIER_STALE: {
+    title: 'Supplier check is stale',
+    action:
+      'Nothing was created. Availability was verified once but the check is now too old to rely on. Re-verify the product is still available from the supplier, then push.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
+  RESEARCH_SUPPLIER_VARIANTS: {
+    title: 'Some variants are unavailable or unverified',
+    action:
+      'Nothing was created. Review the supplier variant coverage and acknowledge it to proceed with the available variants only - unavailable variants are never created.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
   RESEARCH_PUSH_SAFETY: {
     title: 'A product may be visible - check Shopify now',
     action:
@@ -329,6 +361,11 @@ export function isNoOpFailure(code: string): boolean {
     code === 'RESEARCH_PUSH_IN_PROGRESS' ||
     // Ownership was taken over before this push created anything. Like the others here,
     // and UNLIKE RESEARCH_PUSH_SAFETY (where a product exists), nothing was created.
-    code === 'PUSH_CLAIM_LOST'
+    code === 'PUSH_CLAIM_LOST' ||
+    // The supplier gate refused before any Shopify write. Nothing was created.
+    code === 'RESEARCH_SUPPLIER_UNAVAILABLE' ||
+    code === 'RESEARCH_SUPPLIER_UNVERIFIED' ||
+    code === 'RESEARCH_SUPPLIER_STALE' ||
+    code === 'RESEARCH_SUPPLIER_VARIANTS'
   );
 }
