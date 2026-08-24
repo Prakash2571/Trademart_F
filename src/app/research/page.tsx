@@ -15,7 +15,14 @@
  * ScorePair.
  */
 
-import { useCallback, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import Link from 'next/link';
 
 import {
@@ -37,12 +44,13 @@ import {
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPost } from '@/lib/api';
-import { formatDate, formatNumber } from '@/lib/format';
+import { formatDate, formatNumber, parseNumericInput } from '@/lib/format';
 import type {
   CandidateStatus,
   ProductCandidate,
   ResearchCapabilitiesReport,
   SeasonState,
+  ShopifyStatus,
 } from '@/lib/types';
 
 const STATUS_FILTERS: { value: CandidateStatus | 'ALL'; label: string }[] = [
@@ -339,21 +347,32 @@ interface FormState {
   seasonState: SeasonState;
   observedAt: string;
   geographyCountryCode: string;
+  geographyRegion: string;
   sourceNote: string;
 }
 
+/*
+ * No GB/GBP here.
+ *
+ * The target country and the currency used to default to 'GB'/'GBP' - literals that were
+ * right for whoever wrote the form and wrong for everyone else, and worse, invisible: an
+ * operator in another market would submit GB/GBP without noticing the boxes were already
+ * filled. Target country is now required and starts blank; currency is prefilled from the
+ * connected store's own currency (see CandidateForm) and left blank when that is unknown,
+ * so the value is either the operator's or the store's, never a guess baked into the code.
+ */
 const EMPTY_FORM: FormState = {
   title: '',
   category: '',
   sourceProductId: '',
   sourceUrl: '',
   keywords: '',
-  countryCode: 'GB',
+  countryCode: '',
   region: '',
   horizonDays: 30,
   supplierCost: '',
   shippingCost: '',
-  currency: 'GBP',
+  currency: '',
   shippingDays: '',
   expectedSellingPrice: '',
   averageMonthlySearches: '',
@@ -362,16 +381,9 @@ const EMPTY_FORM: FormState = {
   seasonState: 'UNKNOWN',
   observedAt: '',
   geographyCountryCode: '',
+  geographyRegion: '',
   sourceNote: '',
 };
-
-/** Blank means UNKNOWN, never 0. This is the whole reason the fields are strings. */
-function numberOrNull(raw: string): number | null {
-  const trimmed = raw.trim();
-  if (trimmed === '') return null;
-  const value = Number(trimmed);
-  return Number.isFinite(value) ? value : null;
-}
 
 function textOrNull(raw: string): string | null {
   const trimmed = raw.trim();
@@ -390,6 +402,26 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
+  /** Per-field parse errors, so a typo like "12x" is refused where it was typed. */
+  const [fieldErrors, setFieldErrors] = useState<string[]>([]);
+
+  /*
+   * The store's own currency, used to prefill the currency box - "shop config or blank",
+   * never a hard-coded GBP. Prefilled only while the field is still untouched, so it can
+   * never overwrite what the operator typed, and it stays blank if the store currency is
+   * unknown (an unlabelled amount is refused downstream rather than guessed).
+   */
+  const shop = useApi<ShopifyStatus>('/shopify/status');
+  const [currencyTouched, setCurrencyTouched] = useState(false);
+  const storeCurrency = shop.data?.shop?.currencyCode ?? null;
+
+  useEffect(() => {
+    if (!currencyTouched && form.currency === '' && storeCurrency !== null) {
+      setForm((current) =>
+        current.currency === '' ? { ...current, currency: storeCurrency } : current,
+      );
+    }
+  }, [storeCurrency, currencyTouched, form.currency]);
 
   const set = useCallback(
     <K extends keyof FormState>(key: K, value: FormState[K]) =>
@@ -399,6 +431,58 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+
+    /*
+     * Parse every numeric field STRICTLY before anything is sent.
+     *
+     * parseNumericInput rejects "12x" instead of quietly turning it into "unknown", so a
+     * mistyped cost is caught here rather than silently dropped and then discovered as a
+     * blocked price recommendation later. Blank stays blank - unknown is always allowed.
+     */
+    const supplierCost = parseNumericInput(form.supplierCost, { label: 'Supplier cost' });
+    const shippingCost = parseNumericInput(form.shippingCost, { label: 'Supplier shipping' });
+    const shippingDays = parseNumericInput(form.shippingDays, {
+      label: 'Transit days',
+      integer: true,
+    });
+    const expectedSellingPrice = parseNumericInput(form.expectedSellingPrice, {
+      label: 'Intended price',
+    });
+    const averageMonthlySearches = parseNumericInput(form.averageMonthlySearches, {
+      label: 'Average monthly searches',
+      integer: true,
+    });
+    // Trend may be negative - a declining product is a real observation, not an error.
+    const momentumPercentage = parseNumericInput(form.momentumPercentage, {
+      label: 'Trend %',
+      allowNegative: true,
+    });
+    const competitionIndex = parseNumericInput(form.competitionIndex, {
+      label: 'Competition',
+      integer: true,
+    });
+
+    const parseErrors = [
+      supplierCost,
+      shippingCost,
+      shippingDays,
+      expectedSellingPrice,
+      averageMonthlySearches,
+      momentumPercentage,
+      competitionIndex,
+    ]
+      .map((parsed) => parsed.error)
+      .filter((message): message is string => message !== null);
+
+    if (parseErrors.length > 0) {
+      // Refuse locally - the numbers never reach the API, so a typo cannot become a stored
+      // figure or a silent blank.
+      setFieldErrors(parseErrors);
+      setError(null);
+      return;
+    }
+    setFieldErrors([]);
+
     setSaving(true);
     setError(null);
 
@@ -419,28 +503,27 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
           horizonDays: form.horizonDays,
         },
         commercials: {
-          supplierCost: numberOrNull(form.supplierCost),
+          supplierCost: supplierCost.value,
           supplierCurrency: textOrNull(form.currency),
-          shippingCost: numberOrNull(form.shippingCost),
+          shippingCost: shippingCost.value,
           shippingCurrency: textOrNull(form.currency),
-          shippingDays: numberOrNull(form.shippingDays),
-          expectedSellingPrice: numberOrNull(form.expectedSellingPrice),
+          shippingDays: shippingDays.value,
+          expectedSellingPrice: expectedSellingPrice.value,
           expectedSellingCurrency: textOrNull(form.currency),
           costObservedAt: textOrNull(form.observedAt),
         },
         manualResearch: {
-          averageMonthlySearches: numberOrNull(form.averageMonthlySearches),
-          momentumPercentage: numberOrNull(form.momentumPercentage),
-          competitionIndex: numberOrNull(form.competitionIndex),
+          averageMonthlySearches: averageMonthlySearches.value,
+          momentumPercentage: momentumPercentage.value,
+          competitionIndex: competitionIndex.value,
           competitorCount: null,
           seasonState: form.seasonState,
           peakMonths: null,
           geography: {
-            // Falls back to the market country ONLY if the operator says so explicitly;
-            // otherwise it stays null and the scorers treat the geography as unstated
-            // rather than assuming the figure describes the target market.
+            // Stays null unless the operator states it - a figure with no stated geography
+            // is treated as unknown, never assumed to describe the target market.
             countryCode: textOrNull(form.geographyCountryCode),
-            region: null,
+            region: textOrNull(form.geographyRegion),
           },
           observedAt: textOrNull(form.observedAt),
           sourceNote: textOrNull(form.sourceNote),
@@ -448,6 +531,7 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
       });
 
       setForm(EMPTY_FORM);
+      setCurrencyTouched(false);
       onCreated();
     } catch (caught: unknown) {
       setError(
@@ -468,6 +552,16 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
       </p>
       <form onSubmit={submit} className="stack">
         {error !== null && <ErrorCallout error={error} />}
+
+        {fieldErrors.length > 0 && (
+          <Callout tone="warning" title="Check these figures">
+            <ul className="note-list" style={{ marginBottom: 0 }}>
+              {fieldErrors.map((message, index) => (
+                <li key={index}>{message}</li>
+              ))}
+            </ul>
+          </Callout>
+        )}
 
         <Field label="Product title" required>
           <input
@@ -585,14 +679,22 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
               }
             />
           </Field>
-          <Field label="Currency" hint="All three amounts, same currency">
+          <Field
+            label="Currency"
+            hint={
+              storeCurrency === null
+                ? 'All three amounts, same currency'
+                : `All three amounts, same currency. Prefilled from your store (${storeCurrency}).`
+            }
+          >
             <input
               className="select"
               value={form.currency}
               maxLength={3}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                set('currency', event.target.value)
-              }
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                setCurrencyTouched(true);
+                set('currency', event.target.value);
+              }}
             />
           </Field>
           <Field label="Transit days">
@@ -685,6 +787,19 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
                 set('geographyCountryCode', event.target.value)
               }
               placeholder="US"
+            />
+          </Field>
+          <Field
+            label="Region these figures describe"
+            hint="Optional. Only meaningful once a country is stated above."
+          >
+            <input
+              className="select"
+              value={form.geographyRegion}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('geographyRegion', event.target.value)
+              }
+              placeholder="California"
             />
           </Field>
           <Field label="When did you read them?" hint="Freshness ages from this date">

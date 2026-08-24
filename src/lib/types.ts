@@ -1344,14 +1344,48 @@ export interface ProductCandidate {
   evidence: EvidenceItem[];
   freshness: Freshness;
   status: CandidateStatus;
+  /**
+   * The push lifecycle, ORTHOGONAL to status. Read this - not status - to know whether a
+   * push may begin. Mirrors the backend's PushState.
+   *
+   *   IDLE             nothing in flight
+   *   IN_PROGRESS      a push holds the claim right now; a second must not start
+   *   SUCCEEDED        a draft was created
+   *   SAFETY_INCIDENT  a product exists that could not be verified hidden - needs a human
+   */
+  pushState: PushState;
   /** Set once a Shopify DRAFT exists. Never implies it is published. */
   pushedShopifyProductId: string | null;
+  /** Why the last push ended in SAFETY_INCIDENT. Null in every other state. */
+  pushSafetyReason: string | null;
   watchUntil: string | null;
   scoreHistory: ScoreHistoryEntry[];
   notes: string | null;
   createdAt: string;
   analyzedAt: string | null;
   updatedAt: string;
+}
+
+export type PushState = 'IDLE' | 'IN_PROGRESS' | 'SUCCEEDED' | 'SAFETY_INCIDENT';
+
+/**
+ * One yes/no decision about an action, with the operator-facing reason when it is no.
+ *
+ * Computed by the backend (candidate.transitions.ts) and sent down so the UI does not keep
+ * a second copy of the transition rules that could drift from the routes that enforce them.
+ */
+export interface ActionDecision {
+  allowed: boolean;
+  reason: string | null;
+}
+
+/** What the backend currently permits for a candidate. Keyed the same as the buttons. */
+export interface AllowedActions {
+  watch: ActionDecision;
+  select: ActionDecision;
+  reject: ActionDecision;
+  push: ActionDecision;
+  analyze: ActionDecision;
 }
 
 /* --------------------------------------------------------------- pricing -- */
@@ -1450,6 +1484,49 @@ export interface AnalyzeResult {
   unavailable: ResearchCapability[];
   warnings: string[];
   capabilities: CapabilityAvailability[];
+  /**
+   * The hash the operator must send back with a push.
+   *
+   * It binds the exact decision they reviewed. If the recommendation or price moves before
+   * they push, the backend refuses with RECOMMENDATION_CHANGED rather than creating a
+   * product on a decision nobody approved.
+   */
+  decisionHash: string;
+  /** Whether the stored score no longer matches the candidate's current inputs. */
+  scoreIsStale: boolean;
+}
+
+/**
+ * The verified Shopify state of a pushed product.
+ *
+ * `visibleToCustomers` is the ONLY field that means a customer could see it - read back
+ * from Shopify, never inferred from `status`.
+ */
+export interface ShopifyProductState {
+  status: string | null;
+  published: boolean;
+  visibleToCustomers: boolean;
+}
+
+/**
+ * GET /api/intelligence/candidates/:id/decision - the current decision and its hash.
+ *
+ * Read immediately before a push. Computes a fresh analysis and PERSISTS NOTHING, so
+ * opening the confirmation dialog cannot move the stored score. The summary shown to the
+ * operator and the `decisionHash` sent with the push come from this one response, so what
+ * they confirm is provably what the hash covers.
+ */
+export interface CandidateDecision {
+  decisionHash: string;
+  candidate: ProductCandidate;
+  recommendation: Recommendation | null;
+  overallScore: number | null;
+  confidenceScore: number | null;
+  recommendationDowngraded: boolean;
+  pricing: PriceRecommendation;
+  policy: PricingPolicy;
+  warnings: string[];
+  actions: AllowedActions;
 }
 
 /* ------------------------------------------------------------ duplicates -- */
@@ -1474,13 +1551,26 @@ export interface DuplicateReport {
 
 /* ------------------------------------------------------------------ push -- */
 
-/** POST /api/intelligence/candidates/:id/push - creates a DRAFT, never publishes. */
+/**
+ * POST /api/intelligence/candidates/:id/push - creates a DRAFT, never publishes.
+ *
+ * Mirrors the backend orchestrator's PushAsDraftResult. `outcome` distinguishes a fresh
+ * create from a reconciliation of a product a crashed earlier attempt had already made;
+ * `listedPrice` is null on a reconcile because nothing was priced. `productState` carries
+ * the VERIFIED visibility, and `safetyIncident` is set when the product could not be
+ * confirmed hidden - which the API also signals with a RESEARCH_PUSH_SAFETY error, so this
+ * field is really for the audit-style display.
+ */
 export interface PushAsDraftResult {
   candidate: ProductCandidate;
-  product: ProductCreateResult;
+  outcome: 'CREATED' | 'RECONCILED';
+  shopifyProductId: string;
+  productState: ShopifyProductState;
   duplicates: DuplicateReport;
-  listedPrice: { amount: number; currencyCode: string | null; source: string };
+  listedPrice: { amount: number; currencyCode: string | null; source: string } | null;
   /** True when the candidate's supplier cost reached the new variant. */
   costRecorded: boolean;
+  /** Set only when the product could not be verified hidden. Never an ordinary success. */
+  safetyIncident: string | null;
   warnings: string[];
 }

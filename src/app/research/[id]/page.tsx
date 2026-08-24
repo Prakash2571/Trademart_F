@@ -41,10 +41,12 @@ import {
   SkeletonStats,
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
-import { ApiError, apiPost } from '@/lib/api';
+import { ApiError, apiGet, apiPost, newIdempotencyKey } from '@/lib/api';
 import { formatAmount, formatDate, formatDateTime } from '@/lib/format';
 import type {
+  AllowedActions,
   AnalyzeResult,
+  CandidateDecision,
   DuplicateReport,
   PricingScenarioName,
   ProductCandidate,
@@ -73,12 +75,31 @@ export default function CandidatePage() {
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [scenario, setScenario] = useState<PricingScenarioName>('BALANCED');
   const [pushOpen, setPushOpen] = useState(false);
+  /**
+   * The decision the confirmation dialog is bound to, fetched fresh each time it opens.
+   * Its `decisionHash` is sent with the push; if the numbers moved since it was read the
+   * backend refuses rather than creating a product on a decision nobody saw.
+   */
+  const [decision, setDecision] = useState<CandidateDecision | null>(null);
+  const [pushError, setPushError] = useState<ApiError | null>(null);
+  const [recommendationChanged, setRecommendationChanged] = useState(false);
+  /** One key per push intent, reused across a retry so it de-duplicates rather than duplicates. */
+  const [pushKey, setPushKey] = useState<string | null>(null);
+  /** Explicit, SEPARATE from the duplicate override: accepting a loss-making price is its own decision. */
+  const [acknowledgeGuardBreach, setAcknowledgeGuardBreach] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [watchOpen, setWatchOpen] = useState(false);
   const [watchUntil, setWatchUntil] = useState('');
 
-  const meta = candidate.meta as { scoreIsStale?: boolean; note?: string | null } | undefined;
+  const meta = candidate.meta as
+    | {
+        scoreIsStale?: boolean;
+        note?: string | null;
+        actions?: AllowedActions;
+        pushSafetyReason?: string | null;
+      }
+    | undefined;
   const data = candidate.data;
 
   const run = useCallback(
@@ -111,16 +132,77 @@ export default function CandidatePage() {
       duplicates.refetch();
     });
 
-  const push = (allowDuplicate: boolean) =>
-    run('push', async () => {
+  /**
+   * Loads the CURRENT decision, then opens the confirmation dialog.
+   *
+   * The summary shown and the hash sent both come from this one response, so the operator
+   * confirms exactly what the hash covers. A fresh idempotency key is minted per intent and
+   * reused across retries of this same push.
+   */
+  const openPush = () =>
+    run('decision', async () => {
+      const result = await apiGet<CandidateDecision>(
+        `/intelligence/candidates/${encodeURIComponent(id)}/decision`,
+      );
+      setDecision(result.data);
+      setAcknowledgeGuardBreach(false);
+      setRecommendationChanged(false);
+      setPushError(null);
+      setPushKey(newIdempotencyKey());
+      setPushOpen(true);
+    });
+
+  const push = async (allowDuplicate: boolean) => {
+    if (decision === null || pushKey === null) return;
+    setBusy('push');
+    setPushError(null);
+    try {
       const result = await apiPost<PushAsDraftResult>(
         `/intelligence/candidates/${encodeURIComponent(id)}/push`,
-        { scenario, allowDuplicate },
+        {
+          scenario,
+          allowDuplicate,
+          acknowledgeGuardBreach,
+          // Proves the operator is approving the decision they were shown, not whatever the
+          // numbers happen to be now.
+          expectedDecisionHash: decision.decisionHash,
+        },
+        { idempotencyKey: pushKey },
       );
       setPushed(result.data);
       setPushOpen(false);
       candidate.refetch();
-    });
+    } catch (caught: unknown) {
+      if (caught instanceof ApiError && caught.code === 'RECOMMENDATION_CHANGED') {
+        /*
+         * The decision moved between reading it and pushing. Nothing was created. Re-read
+         * it so the dialog shows the CURRENT numbers, flag that it changed, and mint a new
+         * key because this is now a different decision. The operator must look again.
+         */
+        try {
+          const fresh = await apiGet<CandidateDecision>(
+            `/intelligence/candidates/${encodeURIComponent(id)}/decision`,
+          );
+          setDecision(fresh.data);
+        } catch {
+          // If even the re-read fails, fall through to showing the original error.
+        }
+        setRecommendationChanged(true);
+        setAcknowledgeGuardBreach(false);
+        setPushKey(newIdempotencyKey());
+        candidate.refetch();
+      } else {
+        setPushError(
+          caught instanceof ApiError ? caught : new ApiError('UNKNOWN', 'The push failed.', 0),
+        );
+        // A refused push may have changed the candidate's push state (already pushed, or a
+        // safety incident); reflect it.
+        candidate.refetch();
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const reject = () =>
     run('reject', async () => {
@@ -143,6 +225,47 @@ export default function CandidatePage() {
 
   const pricing = analysis?.pricing ?? null;
   const alreadyPushed = data?.pushedShopifyProductId ?? null;
+
+  /*
+   * Button availability comes from the SERVER's own transition rules (meta.actions), not a
+   * second copy computed here. The backend re-checks on every route, so a button that is
+   * enabled while the route would refuse is a bug; deriving them from the same source is
+   * what stops the two drifting - notably it hides Push while a push is IN_PROGRESS, which
+   * a purely client-side `alreadyPushed` check could never see.
+   */
+  const actions = meta?.actions;
+  const decide = (
+    key: keyof AllowedActions,
+    fallbackAllowed: boolean,
+    fallbackReason: string | null,
+  ): { disabled: boolean; reason: string | null } => {
+    const decision = actions?.[key];
+    if (decision === undefined) return { disabled: !fallbackAllowed, reason: fallbackReason };
+    return { disabled: !decision.allowed, reason: decision.reason };
+  };
+
+  const pushState = data?.pushState ?? 'IDLE';
+  const pushSafetyReason = meta?.pushSafetyReason ?? data?.pushSafetyReason ?? null;
+  const analyseGate = decide('analyze', true, null);
+  const watchGate = decide('watch', true, null);
+  const rejectGate = decide('reject', data?.status !== 'REJECTED', 'Already rejected.');
+  const pushGate = decide(
+    'push',
+    alreadyPushed === null,
+    alreadyPushed === null ? null : `Already pushed as ${alreadyPushed}.`,
+  );
+
+  // Everything the confirmation dialog needs, derived from the fetched decision.
+  const chosenScenario = decision?.pricing.scenarios.find((entry) => entry.name === scenario) ?? null;
+  const priceBlockedReason = decision?.pricing.blockedReason ?? null;
+  const guardBreaches = chosenScenario?.guardBreaches ?? [];
+  const guardAckNeeded = guardBreaches.length > 0;
+  const blockingDuplicates = duplicates.data?.blocking ?? [];
+  const createDraftDisabled =
+    busy !== null ||
+    decision === null ||
+    priceBlockedReason !== null ||
+    (guardAckNeeded && !acknowledgeGuardBreach);
 
   return (
     <>
@@ -256,7 +379,8 @@ export default function CandidatePage() {
                 type="button"
                 className="btn btn--sm"
                 onClick={analyse}
-                disabled={busy !== null}
+                disabled={busy !== null || analyseGate.disabled}
+                title={analyseGate.reason ?? undefined}
               >
                 {busy === 'analyse' ? 'Analysing…' : 'Analyse'}
               </button>
@@ -265,7 +389,8 @@ export default function CandidatePage() {
                 type="button"
                 className="btn btn--sm"
                 onClick={() => setWatchOpen(true)}
-                disabled={busy !== null}
+                disabled={busy !== null || watchGate.disabled}
+                title={watchGate.reason ?? undefined}
               >
                 Watch
               </button>
@@ -274,29 +399,43 @@ export default function CandidatePage() {
                 type="button"
                 className="btn btn--sm"
                 onClick={() => setRejectOpen(true)}
-                disabled={busy !== null || data.status === 'REJECTED'}
+                disabled={busy !== null || rejectGate.disabled}
+                title={rejectGate.reason ?? undefined}
               >
                 Reject
               </button>
 
               {/*
                 The only path from research into Shopify, and it creates a DRAFT.
-                There is deliberately no publish control anywhere on this page.
+                There is deliberately no publish control anywhere on this page. Clicking it
+                first LOADS the current decision (openPush), so the confirmation shows live
+                numbers rather than whatever was on screen.
               */}
               <button
                 type="button"
                 className="btn btn--sm"
-                onClick={() => setPushOpen(true)}
-                disabled={busy !== null || alreadyPushed !== null}
-                title={
-                  alreadyPushed === null
-                    ? 'Creates an unpublished DRAFT product in Shopify'
-                    : `Already pushed as ${alreadyPushed}. Pushing again would duplicate it.`
-                }
+                onClick={openPush}
+                disabled={busy !== null || pushGate.disabled}
+                title={pushGate.reason ?? 'Creates an unpublished DRAFT product in Shopify'}
               >
-                Push as Draft
+                {busy === 'decision' ? 'Loading decision…' : 'Push as Draft'}
               </button>
             </div>
+
+            {pushState === 'IN_PROGRESS' && (
+              <Callout tone="info" title="A push is running">
+                Another push for this candidate is in progress. Wait for it to finish rather
+                than starting a second one — if it has genuinely stalled, the claim releases
+                on its own after a couple of minutes and Push becomes available again.
+              </Callout>
+            )}
+
+            {pushState === 'SAFETY_INCIDENT' && (
+              <Callout tone="danger" title="A product may be visible — check Shopify now">
+                {pushSafetyReason ??
+                  'The last push left a Shopify product that Trademart could not verify as hidden. Open it in Shopify and unpublish it before doing anything else with this candidate.'}
+              </Callout>
+            )}
 
             <p className="muted" style={{ fontSize: 12 }}>
               Push as Draft creates an <strong>unpublished</strong> Shopify product. Nothing
@@ -315,19 +454,42 @@ export default function CandidatePage() {
 
           {/* ---- push result ------------------------------------------- */}
           {pushed !== null && (
-            <Card title="Draft created">
-              <Callout tone="success" title="A DRAFT was created — nothing is published">
-                Shopify product <span className="mono">{pushed.product.shopifyProductId}</span>{' '}
-                with status <strong>{pushed.product.status}</strong>, listed at{' '}
-                {formatAmount(pushed.listedPrice.amount, pushed.listedPrice.currencyCode)} (
-                {pushed.listedPrice.source}).
-              </Callout>
+            <Card title={pushed.outcome === 'RECONCILED' ? 'Existing draft reconciled' : 'Draft created'}>
+              {pushed.safetyIncident !== null ? (
+                <Callout tone="danger" title="A product exists but may be visible — check Shopify">
+                  {pushed.safetyIncident}
+                </Callout>
+              ) : pushed.outcome === 'RECONCILED' ? (
+                <Callout tone="info" title="Nothing new was created">
+                  A Shopify draft for this candidate already existed (
+                  <span className="mono">{pushed.shopifyProductId}</span>), so it was adopted
+                  rather than duplicated. It almost certainly came from an earlier attempt
+                  that did not finish recording itself.
+                </Callout>
+              ) : (
+                <Callout tone="success" title="A DRAFT was created — nothing is published">
+                  Shopify product <span className="mono">{pushed.shopifyProductId}</span> with
+                  status <strong>{pushed.productState.status ?? 'unknown'}</strong>
+                  {pushed.listedPrice !== null ? (
+                    <>
+                      , listed at{' '}
+                      {formatAmount(
+                        pushed.listedPrice.amount,
+                        pushed.listedPrice.currencyCode,
+                      )}{' '}
+                      ({pushed.listedPrice.source}).
+                    </>
+                  ) : (
+                    '.'
+                  )}
+                </Callout>
+              )}
 
               <KeyValue
                 items={[
                   {
                     key: 'Visible to customers',
-                    value: pushed.product.visibleToCustomers ? (
+                    value: pushed.productState.visibleToCustomers ? (
                       <Badge tone="danger">yes — check this</Badge>
                     ) : (
                       <Badge tone="success">no</Badge>
@@ -600,38 +762,133 @@ export default function CandidatePage() {
         <Modal title="Push as Draft" onClose={() => setPushOpen(false)}>
           <p>
             This creates an <strong>unpublished DRAFT</strong> product in Shopify from{' '}
-            <strong>{data.title}</strong>, priced from the{' '}
-            {scenario.toLowerCase()} scenario. It does not publish anything and customers will
-            not see it.
+            <strong>{data.title}</strong>. It does not publish anything and customers will not
+            see it.
           </p>
 
-          {duplicates.data !== null && duplicates.data.blocking.length > 0 && (
+          {/*
+            The decision the operator is about to approve, shown from the SAME response whose
+            hash is sent with the push. Confirming a summary fetched separately from the hash
+            would recreate the very gap the hash exists to close.
+          */}
+          {decision !== null && (
+            <Card title="What you are approving">
+              <KeyValue
+                items={[
+                  {
+                    key: 'Recommendation',
+                    value: (
+                      <span className="row" style={{ gap: 6, alignItems: 'center' }}>
+                        <RecommendationBadge recommendation={decision.recommendation} />
+                        {decision.recommendationDowngraded && (
+                          <Badge tone="warning" title="Held below its raw score because data confidence was low.">
+                            downgraded
+                          </Badge>
+                        )}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'Opportunity / confidence',
+                    value: (
+                      <span className="mono">
+                        {decision.overallScore ?? '—'} / {decision.confidenceScore ?? '—'}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: `Listed price (${scenario.toLowerCase()})`,
+                    value:
+                      priceBlockedReason !== null ? (
+                        <Badge tone="warning">no price</Badge>
+                      ) : chosenScenario === null ? (
+                        <span className="muted">not available for this scenario</span>
+                      ) : (
+                        <span className="mono">
+                          {formatAmount(chosenScenario.price, decision.pricing.currencyCode)}
+                        </span>
+                      ),
+                  },
+                ]}
+              />
+              {decision.warnings.length > 0 && (
+                <ul className="note-list" style={{ marginTop: 8 }}>
+                  {decision.warnings.map((warning, index) => (
+                    <li key={index}>
+                      <Badge tone="warning">warning</Badge> {warning}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
+
+          {recommendationChanged && (
+            <Callout tone="warning" title="The recommendation changed">
+              The recommendation changed. Review the updated analysis above before creating the
+              draft. Nothing has been created.
+            </Callout>
+          )}
+
+          {priceBlockedReason !== null && (
+            <Callout tone="warning" title="No price could be computed">
+              {priceBlockedReason} A draft cannot be created without a price.
+            </Callout>
+          )}
+
+          {guardAckNeeded && (
+            <Callout tone="danger" title="This price breaches your commercial floors">
+              <ul className="note-list">
+                {guardBreaches.map((breach, index) => (
+                  <li key={index}>it {breach}</li>
+                ))}
+              </ul>
+              <label className="row" style={{ gap: 8, alignItems: 'flex-start', marginBottom: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={acknowledgeGuardBreach}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                    setAcknowledgeGuardBreach(event.target.checked)
+                  }
+                />
+                <span style={{ fontSize: 13 }}>
+                  I understand this price is below my own floors and want to list it anyway.
+                  This is recorded in the audit trail.
+                </span>
+              </label>
+            </Callout>
+          )}
+
+          {blockingDuplicates.length > 0 && (
             <Callout tone="warning" title="This looks like a duplicate">
-              <DuplicateList matches={duplicates.data.blocking} />
+              <DuplicateList matches={blockingDuplicates} />
               <p style={{ marginBottom: 0 }}>
                 Pushing anyway will create a second product competing with the existing one.
               </p>
             </Callout>
           )}
 
+          {pushError !== null && <ErrorCallout error={pushError} />}
+
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button
               type="button"
               className="btn btn--sm"
               onClick={() => push(false)}
-              disabled={busy !== null}
+              disabled={createDraftDisabled}
             >
               {busy === 'push' ? 'Creating draft…' : 'Create draft'}
             </button>
 
-            {duplicates.data !== null && duplicates.data.blocking.length > 0 && (
+            {blockingDuplicates.length > 0 && (
               // A separate, explicitly labelled button rather than a checkbox: overriding a
-              // duplicate block should be a deliberate act, not a box someone ticks past.
+              // duplicate block should be a deliberate act. It still honours the guard-breach
+              // acknowledgement, so the two overrides remain independent decisions.
               <button
                 type="button"
                 className="btn btn--sm"
                 onClick={() => push(true)}
-                disabled={busy !== null}
+                disabled={createDraftDisabled}
               >
                 Create anyway — it is a different product
               </button>
