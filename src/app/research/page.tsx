@@ -30,6 +30,7 @@ import {
   RecommendationBadge,
   ScorePair,
   SeasonBadge,
+  SupplierBadge,
 } from '@/components/ResearchUi';
 import {
   Badge,
@@ -51,6 +52,7 @@ import type {
   ResearchCapabilitiesReport,
   SeasonState,
   ShopifyStatus,
+  SourceabilitySummary,
 } from '@/lib/types';
 
 const STATUS_FILTERS: { value: CandidateStatus | 'ALL'; label: string }[] = [
@@ -61,6 +63,15 @@ const STATUS_FILTERS: { value: CandidateStatus | 'ALL'; label: string }[] = [
   { value: 'SELECTED', label: 'Selected' },
   { value: 'PUSHED_TO_SHOPIFY', label: 'Pushed as draft' },
   { value: 'REJECTED', label: 'Rejected' },
+];
+
+type SupplierFilterValue = 'ALL' | 'available' | 'needs-verification' | 'stale' | 'unavailable';
+const SUPPLIER_FILTERS: { value: SupplierFilterValue; label: string }[] = [
+  { value: 'ALL', label: 'All' },
+  { value: 'available', label: 'Available' },
+  { value: 'needs-verification', label: 'Needs verification' },
+  { value: 'stale', label: 'Stale' },
+  { value: 'unavailable', label: 'Unavailable' },
 ];
 
 const SEASON_OPTIONS: SeasonState[] = [
@@ -78,18 +89,28 @@ const HORIZONS = [7, 30, 90] as const;
 export default function ResearchPage() {
   const [status, setStatus] = useState<CandidateStatus | 'ALL'>('ALL');
   const [sort, setSort] = useState<'score' | 'recent'>('score');
+  const [supplier, setSupplier] = useState<SupplierFilterValue>('ALL');
   const [showForm, setShowForm] = useState(false);
 
   const path = `/intelligence/candidates?limit=100&sort=${sort}${
     status === 'ALL' ? '' : `&status=${status}`
-  }`;
-  const candidates = useApi<ProductCandidate[]>(path, [status, sort]);
+  }${supplier === 'ALL' ? '' : `&supplier=${supplier}`}`;
+  const candidates = useApi<ProductCandidate[]>(path, [status, sort, supplier]);
   const capabilities = useApi<ResearchCapabilitiesReport>('/intelligence/capabilities');
 
   const rows = candidates.data ?? [];
   const meta = candidates.meta as
-    | { count?: number; unscored?: number; lowConfidence?: number }
+    | {
+        count?: number;
+        unscored?: number;
+        lowConfidence?: number;
+        needsSupplierVerification?: number;
+        staleSupplier?: number;
+        unavailableSupplier?: number;
+        sourceability?: Record<string, SourceabilitySummary>;
+      }
     | undefined;
+  const sourceability = meta?.sourceability ?? {};
 
   return (
     <>
@@ -172,6 +193,13 @@ export default function ResearchPage() {
             value={formatNumber(meta.lowConfidence ?? 0)}
             hint="Scored, but on data that cannot be trusted yet"
           />
+          <StatCard
+            label="Need supplier check"
+            value={formatNumber(
+              (meta.needsSupplierVerification ?? 0) + (meta.staleSupplier ?? 0),
+            )}
+            hint="Unverified or stale supplier availability — verify before pushing"
+          />
         </div>
       )}
 
@@ -191,6 +219,24 @@ export default function ResearchPage() {
               }
             >
               {STATUS_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
+            <label className="muted" htmlFor="rs-supplier" style={{ fontSize: 12 }}>
+              Supplier
+            </label>
+            <select
+              id="rs-supplier"
+              className="select"
+              value={supplier}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setSupplier(event.target.value as SupplierFilterValue)
+              }
+            >
+              {SUPPLIER_FILTERS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -218,7 +264,7 @@ export default function ResearchPage() {
           Opportunity and data confidence are shown separately and are never combined.
         </p>
 
-        {candidates.loading && <SkeletonTable rows={5} columns={6} />}
+        {candidates.loading && <SkeletonTable rows={5} columns={7} />}
 
         {!candidates.loading && rows.length === 0 && (
           <EmptyState
@@ -235,6 +281,7 @@ export default function ResearchPage() {
                   <th>Product</th>
                   <th>Score / confidence</th>
                   <th>Recommendation</th>
+                  <th>Supplier</th>
                   <th>Market</th>
                   <th>Season</th>
                   <th>Status</th>
@@ -262,7 +309,27 @@ export default function ResearchPage() {
                       />
                     </td>
                     <td>
-                      <RecommendationBadge recommendation={candidate.recommendation} />
+                      {/* The FINAL, supplier-gated recommendation - what the operator acts
+                          on - falling back to the opportunity verdict if the server did
+                          not attach a summary. */}
+                      <RecommendationBadge
+                        recommendation={
+                          sourceability[candidate.id]?.finalRecommendation ??
+                          candidate.recommendation
+                        }
+                      />
+                    </td>
+                    <td>
+                      {sourceability[candidate.id] ? (
+                        <SupplierBadge
+                          provider={sourceability[candidate.id]?.provider}
+                          current={sourceability[candidate.id]!.current}
+                        />
+                      ) : (
+                        <span className="muted" style={{ fontSize: 12 }}>
+                          —
+                        </span>
+                      )}
                     </td>
                     <td className="mono">
                       {candidate.market.countryCode}

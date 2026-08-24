@@ -20,6 +20,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
 import {
+  AVAILABILITY_LABEL,
   DuplicateList,
   EvidenceList,
   FactorTable,
@@ -28,6 +29,8 @@ import {
   ScenarioTable,
   ScorePair,
   SeasonBadge,
+  SupplierBadge,
+  VARIANT_COVERAGE_LABEL,
   formatSearchVolume,
 } from '@/components/ResearchUi';
 import {
@@ -42,7 +45,7 @@ import {
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiGet, apiPost, newIdempotencyKey } from '@/lib/api';
-import { formatAmount, formatDate, formatDateTime } from '@/lib/format';
+import { formatAmount, formatDate, formatDateTime, parseNumericInput } from '@/lib/format';
 import type {
   AllowedActions,
   AnalyzeResult,
@@ -51,6 +54,10 @@ import type {
   PricingScenarioName,
   ProductCandidate,
   PushAsDraftResult,
+  Recommendation,
+  SourceabilityResult,
+  SupplierAvailability,
+  SupplierVerificationInput,
 } from '@/lib/types';
 
 const SCENARIOS: PricingScenarioName[] = ['CONSERVATIVE', 'BALANCED', 'PREMIUM'];
@@ -87,6 +94,9 @@ export default function CandidatePage() {
   const [pushKey, setPushKey] = useState<string | null>(null);
   /** Explicit, SEPARATE from the duplicate override: accepting a loss-making price is its own decision. */
   const [acknowledgeGuardBreach, setAcknowledgeGuardBreach] = useState(false);
+  /** Explicit acknowledgement of PARTIAL supplier variant coverage. Separate decision again. */
+  const [acknowledgePartialVariants, setAcknowledgePartialVariants] = useState(false);
+  const [supplierOpen, setSupplierOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [watchOpen, setWatchOpen] = useState(false);
@@ -98,9 +108,13 @@ export default function CandidatePage() {
         note?: string | null;
         actions?: AllowedActions;
         pushSafetyReason?: string | null;
+        sourceability?: SourceabilityResult;
+        finalRecommendation?: Recommendation | null;
+        opportunityRecommendation?: Recommendation | null;
       }
     | undefined;
   const data = candidate.data;
+  const sourceability = meta?.sourceability ?? null;
 
   const run = useCallback(
     async (label: string, action: () => Promise<void>) => {
@@ -146,6 +160,7 @@ export default function CandidatePage() {
       );
       setDecision(result.data);
       setAcknowledgeGuardBreach(false);
+      setAcknowledgePartialVariants(false);
       setRecommendationChanged(false);
       setPushError(null);
       setPushKey(newIdempotencyKey());
@@ -163,6 +178,7 @@ export default function CandidatePage() {
           scenario,
           allowDuplicate,
           acknowledgeGuardBreach,
+          acknowledgePartialVariants,
           // Proves the operator is approving the decision they were shown, not whatever the
           // numbers happen to be now.
           expectedDecisionHash: decision.decisionHash,
@@ -261,11 +277,18 @@ export default function CandidatePage() {
   const guardBreaches = chosenScenario?.guardBreaches ?? [];
   const guardAckNeeded = guardBreaches.length > 0;
   const blockingDuplicates = duplicates.data?.blocking ?? [];
+  // The supplier verdict THIS decision was computed against. The server enforces the gate;
+  // the dialog mirrors it so the operator is never shown an enabled button the push refuses.
+  const decisionSource = decision?.sourceability ?? null;
+  const supplierBlocked = decisionSource !== null && !decisionSource.pushEligible;
+  const variantAckNeeded = decisionSource?.variantCoverage === 'PARTIAL';
   const createDraftDisabled =
     busy !== null ||
     decision === null ||
     priceBlockedReason !== null ||
-    (guardAckNeeded && !acknowledgeGuardBreach);
+    supplierBlocked ||
+    (guardAckNeeded && !acknowledgeGuardBreach) ||
+    (variantAckNeeded && !acknowledgePartialVariants);
 
   return (
     <>
@@ -294,7 +317,11 @@ export default function CandidatePage() {
           {/* ---- the verdict ------------------------------------------- */}
           <Card
             title="Verdict"
-            actions={<RecommendationBadge recommendation={data.recommendation} />}
+            actions={
+              <RecommendationBadge
+                recommendation={meta?.finalRecommendation ?? data.recommendation}
+              />
+            }
           >
             <ScorePair
               overallScore={data.overallScore}
@@ -304,12 +331,38 @@ export default function CandidatePage() {
             <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
               <SeasonBadge state={data.seasonState} />
               <FreshnessBadge freshness={data.freshness} />
+              {sourceability !== null && (
+                <SupplierBadge provider={sourceability.provider} current={sourceability.current} />
+              )}
               {data.analyzedAt !== null && (
                 <span className="muted" style={{ fontSize: 12 }}>
                   Analysed {formatDateTime(data.analyzedAt)}
                 </span>
               )}
             </div>
+
+            {/*
+              The gate made legible: when the FINAL recommendation differs from the pure
+              OPPORTUNITY one, say WHY - a strong opportunity shown as WATCH looks like a bug
+              unless the screen explains the supplier held it back.
+            */}
+            {meta?.finalRecommendation !== undefined &&
+              meta.finalRecommendation !== data.recommendation && (
+                <Callout
+                  tone={meta.finalRecommendation === 'REJECT' ? 'danger' : 'warning'}
+                  title="Supplier availability changed the recommendation"
+                >
+                  The market opportunity is{' '}
+                  <strong>{(data.recommendation ?? 'not scored').toLowerCase()}</strong>, but the
+                  final recommendation is <strong>{(meta.finalRecommendation ?? 'watch').toLowerCase()}</strong>{' '}
+                  because this product{' '}
+                  {sourceability?.current === 'NOT_SOURCEABLE'
+                    ? 'cannot be sourced from the supplier.'
+                    : sourceability?.current === 'NEEDS_RECHECK'
+                      ? 'has stale supplier availability that must be re-verified.'
+                      : 'has not been verified as sourceable from the supplier.'}
+                </Callout>
+              )}
 
             {data.analyzedAt === null && (
               <Callout tone="info" title="Never analysed">
@@ -449,6 +502,107 @@ export default function CandidatePage() {
                 <span className="mono">{alreadyPushed}</span>. It is a draft, not a published
                 product. Edit it in Shopify rather than pushing again.
               </Callout>
+            )}
+          </Card>
+
+          {/* ---- supplier sourceability -------------------------------- */}
+          <Card
+            title="Supplier"
+            actions={
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => setSupplierOpen(true)}
+                disabled={busy !== null}
+              >
+                {data.supplier === null ? 'Record Tradelle verification' : 'Update supplier verification'}
+              </button>
+            }
+          >
+            {sourceability === null || data.supplier === null ? (
+              <Callout tone="warning" title="Supplier availability UNKNOWN">
+                This candidate has not been verified as sourceable from Tradelle. A product is
+                not sellable on market signals alone — record whether it is currently available
+                from the supplier. A push is blocked until it is verified.
+              </Callout>
+            ) : (
+              <>
+                <div className="row" style={{ gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <SupplierBadge provider={sourceability.provider} current={sourceability.current} />
+                  <FreshnessBadge freshness={sourceability.freshness} />
+                </div>
+                <KeyValue
+                  items={[
+                    { key: 'Provider', value: sourceability.provider },
+                    {
+                      key: 'Availability',
+                      value: AVAILABILITY_LABEL[sourceability.availability],
+                    },
+                    {
+                      key: 'Evidence',
+                      value:
+                        sourceability.availabilitySource === 'MANUAL'
+                          ? 'Manual verification'
+                          : sourceability.availabilitySource === 'SHOPIFY_BRIDGE'
+                            ? 'Shopify-bridge identity (not live stock)'
+                            : 'Supplier API',
+                    },
+                    {
+                      key: 'Last checked',
+                      value:
+                        sourceability.checkedAt === null ? (
+                          <span className="muted">never</span>
+                        ) : (
+                          formatDateTime(sourceability.checkedAt)
+                        ),
+                    },
+                    {
+                      key: 'Supplier product',
+                      value: sourceability.supplierProductId ?? (
+                        <span className="muted">not recorded</span>
+                      ),
+                    },
+                    {
+                      key: 'Supplier cost',
+                      value: formatAmount(sourceability.productCost, sourceability.productCurrency),
+                    },
+                    {
+                      key: 'Supplier shipping',
+                      value: formatAmount(sourceability.shippingCost, sourceability.shippingCurrency),
+                    },
+                    {
+                      key: 'Transit',
+                      value:
+                        sourceability.shippingDays === null
+                          ? '—'
+                          : `${sourceability.shippingDays} days`,
+                    },
+                    {
+                      key: 'Variants',
+                      value:
+                        sourceability.variants.length === 0
+                          ? VARIANT_COVERAGE_LABEL[sourceability.variantCoverage]
+                          : `${sourceability.variants.length} total · ${sourceability.variants.filter((v) => v.availability === 'AVAILABLE').length} available · ${sourceability.variants.filter((v) => v.availability === 'UNAVAILABLE').length} unavailable`,
+                    },
+                  ]}
+                />
+
+                {sourceability.current === 'NEEDS_RECHECK' && (
+                  <Callout tone="warning" title="This check is stale">
+                    Availability was verified before, but the check is now too old to rely on.
+                    Re-verify before pushing.
+                  </Callout>
+                )}
+                {sourceability.sourceUrl !== null && (
+                  <p className="muted" style={{ fontSize: 12 }}>
+                    Evidence link:{' '}
+                    <a href={sourceability.sourceUrl} target="_blank" rel="noreferrer">
+                      {sourceability.sourceUrl}
+                    </a>{' '}
+                    (opened by you — Trademart never fetches it).
+                  </p>
+                )}
+              </>
             )}
           </Card>
 
@@ -811,6 +965,65 @@ export default function CandidatePage() {
                   },
                 ]}
               />
+              {decisionSource !== null && (
+                <KeyValue
+                  items={[
+                    {
+                      key: 'Final recommendation',
+                      value: (
+                        <RecommendationBadge
+                          recommendation={decision.finalRecommendation ?? decision.recommendation}
+                        />
+                      ),
+                    },
+                    {
+                      key: 'Supplier',
+                      value: (
+                        <SupplierBadge
+                          provider={decisionSource.provider}
+                          current={decisionSource.current}
+                        />
+                      ),
+                    },
+                    {
+                      key: 'Availability source',
+                      value:
+                        decisionSource.availabilitySource === 'MANUAL'
+                          ? 'Manual verification'
+                          : decisionSource.availabilitySource === 'SHOPIFY_BRIDGE'
+                            ? 'Shopify-bridge identity'
+                            : 'Supplier API',
+                    },
+                    {
+                      key: 'Last verified',
+                      value:
+                        decisionSource.checkedAt === null ? (
+                          <span className="muted">never</span>
+                        ) : (
+                          formatDateTime(decisionSource.checkedAt)
+                        ),
+                    },
+                    {
+                      key: 'Variant coverage',
+                      value: VARIANT_COVERAGE_LABEL[decisionSource.variantCoverage],
+                    },
+                    {
+                      key: 'Supplier cost',
+                      value: formatAmount(
+                        decisionSource.productCost,
+                        decisionSource.productCurrency,
+                      ),
+                    },
+                    {
+                      key: 'Supplier shipping',
+                      value: formatAmount(
+                        decisionSource.shippingCost,
+                        decisionSource.shippingCurrency,
+                      ),
+                    },
+                  ]}
+                />
+              )}
               {decision.warnings.length > 0 && (
                 <ul className="note-list" style={{ marginTop: 8 }}>
                   {decision.warnings.map((warning, index) => (
@@ -821,6 +1034,39 @@ export default function CandidatePage() {
                 </ul>
               )}
             </Card>
+          )}
+
+          {supplierBlocked && (
+            <Callout tone="danger" title="Cannot push — supplier not sourceable">
+              {decisionSource?.current === 'NOT_SOURCEABLE'
+                ? 'The supplier cannot source this product, so no draft can be created.'
+                : decisionSource?.current === 'NEEDS_RECHECK'
+                  ? 'The supplier check is stale. Re-verify availability before pushing.'
+                  : 'Supplier availability has not been verified. Record a supplier verification before pushing.'}{' '}
+              Close this dialog and use “Record Tradelle verification”.
+            </Callout>
+          )}
+
+          {variantAckNeeded && !supplierBlocked && (
+            <Callout tone="warning" title="Some variants are unavailable or unverified">
+              <p style={{ marginTop: 0 }}>
+                Only the available variants will be created — the unavailable ones are never
+                advertised.
+              </p>
+              <label className="row" style={{ gap: 8, alignItems: 'flex-start', marginBottom: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={acknowledgePartialVariants}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                    setAcknowledgePartialVariants(event.target.checked)
+                  }
+                />
+                <span style={{ fontSize: 13 }}>
+                  I understand some variants are unavailable and want to create the draft for
+                  the available coverage only.
+                </span>
+              </label>
+            </Callout>
           )}
 
           {recommendationChanged && (
@@ -960,6 +1206,281 @@ export default function CandidatePage() {
           </div>
         </Modal>
       )}
+
+      {/* ---- supplier verification --------------------------------- */}
+      {supplierOpen && data !== null && (
+        <SupplierVerificationModal
+          id={id}
+          existing={data.supplier}
+          onClose={() => setSupplierOpen(false)}
+          onSaved={() => {
+            setSupplierOpen(false);
+            candidate.refetch();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/* ===========================================================================
+ * Supplier verification form
+ * ======================================================================== */
+
+interface SupplierFormState {
+  provider: 'TRADELLE' | 'OTHER';
+  availability: SupplierAvailability;
+  supplierProductId: string;
+  sourceUrl: string;
+  productCost: string;
+  productCurrency: string;
+  shippingCost: string;
+  shippingCurrency: string;
+  shippingDays: string;
+  observedAt: string;
+  note: string;
+}
+
+function initialSupplierForm(existing: ProductCandidate['supplier']): SupplierFormState {
+  return {
+    provider: existing?.provider === 'OTHER' ? 'OTHER' : 'TRADELLE',
+    availability: existing?.availability ?? 'AVAILABLE',
+    supplierProductId: existing?.supplierProductId ?? '',
+    sourceUrl: existing?.sourceUrl ?? '',
+    productCost: existing?.productCost != null ? String(existing.productCost) : '',
+    productCurrency: existing?.productCurrency ?? '',
+    shippingCost: existing?.shippingCost != null ? String(existing.shippingCost) : '',
+    shippingCurrency: existing?.shippingCurrency ?? '',
+    shippingDays: existing?.shippingDays != null ? String(existing.shippingDays) : '',
+    observedAt: '',
+    note: existing?.note ?? '',
+  };
+}
+
+/**
+ * Records supplier availability. This is EVIDENCE a human entered - `checkedAt` is stamped
+ * server-side, and the URL is stored for navigation only and never fetched.
+ *
+ * Numbers are parsed STRICTLY (parseNumericInput) so "12x" is rejected, not silently
+ * blanked; a cost is refused without its own currency, and supplier and selling currencies
+ * are independent.
+ */
+function SupplierVerificationModal({
+  id,
+  existing,
+  onClose,
+  onSaved,
+}: {
+  id: string;
+  existing: ProductCandidate['supplier'];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState<SupplierFormState>(() => initialSupplierForm(existing));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<string[]>([]);
+
+  const set = <K extends keyof SupplierFormState>(key: K, value: SupplierFormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const submit = async () => {
+    const productCost = parseNumericInput(form.productCost, { label: 'Supplier cost' });
+    const shippingCost = parseNumericInput(form.shippingCost, { label: 'Supplier shipping' });
+    const shippingDays = parseNumericInput(form.shippingDays, {
+      label: 'Transit days',
+      integer: true,
+    });
+    const errors = [productCost, shippingCost, shippingDays]
+      .map((p) => p.error)
+      .filter((m): m is string => m !== null);
+    // A cost with no currency is refused before it reaches the server too.
+    if (productCost.value !== null && form.productCurrency.trim() === '') {
+      errors.push('A currency is required for the supplier cost.');
+    }
+    if (shippingCost.value !== null && form.shippingCurrency.trim() === '') {
+      errors.push('A currency is required for the supplier shipping cost.');
+    }
+    if (errors.length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+    setFieldErrors([]);
+    setSaving(true);
+    setError(null);
+
+    const body: SupplierVerificationInput = {
+      provider: form.provider,
+      availability: form.availability,
+      supplierProductId: form.supplierProductId.trim() === '' ? null : form.supplierProductId.trim(),
+      sourceUrl: form.sourceUrl.trim() === '' ? null : form.sourceUrl.trim(),
+      observedAt: form.observedAt === '' ? null : new Date(`${form.observedAt}T00:00:00.000Z`).toISOString(),
+      productCost: productCost.value,
+      productCurrency: form.productCurrency.trim() === '' ? null : form.productCurrency.trim().toUpperCase(),
+      shippingCost: shippingCost.value,
+      shippingCurrency: form.shippingCurrency.trim() === '' ? null : form.shippingCurrency.trim().toUpperCase(),
+      shippingDays: shippingDays.value,
+      stockKnown: form.availability !== 'UNKNOWN',
+      variants: [],
+      note: form.note.trim() === '' ? null : form.note.trim(),
+    };
+
+    try {
+      await apiPost(
+        `/intelligence/candidates/${encodeURIComponent(id)}/supplier-verification`,
+        body,
+      );
+      onSaved();
+    } catch (caught: unknown) {
+      setError(
+        caught instanceof ApiError
+          ? caught
+          : new ApiError('UNKNOWN', 'Could not save the verification.', 0),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Record Tradelle availability" onClose={onClose}>
+      <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+        Record what you verified in Tradelle. This is your observation — the link is stored
+        for navigation and is never fetched. Availability ages from now, so re-verify if it
+        goes stale before a push.
+      </p>
+
+      {error !== null && <ErrorCallout error={error} />}
+      {fieldErrors.length > 0 && (
+        <Callout tone="warning" title="Check these figures">
+          <ul className="note-list" style={{ marginBottom: 0 }}>
+            {fieldErrors.map((message, index) => (
+              <li key={index}>{message}</li>
+            ))}
+          </ul>
+        </Callout>
+      )}
+
+      <div className="stack" style={{ gap: 10 }}>
+        <label className="stack" style={{ gap: 3 }}>
+          <span style={{ fontSize: 12 }}>Availability</span>
+          <select
+            className="select"
+            value={form.availability}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+              set('availability', event.target.value as SupplierAvailability)
+            }
+          >
+            <option value="AVAILABLE">Available</option>
+            <option value="UNAVAILABLE">Unavailable</option>
+            <option value="UNKNOWN">Unknown</option>
+          </select>
+        </label>
+
+        <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <label className="stack" style={{ gap: 3, flex: '1 1 180px' }}>
+            <span style={{ fontSize: 12 }}>Tradelle product ID</span>
+            <input
+              className="select"
+              value={form.supplierProductId}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('supplierProductId', event.target.value)
+              }
+              placeholder="TRD-12345"
+            />
+          </label>
+          <label className="stack" style={{ gap: 3, flex: '1 1 240px' }}>
+            <span style={{ fontSize: 12 }}>Tradelle URL (evidence only)</span>
+            <input
+              className="select"
+              value={form.sourceUrl}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('sourceUrl', event.target.value)
+              }
+              placeholder="https://tradelle.io/..."
+            />
+          </label>
+        </div>
+
+        <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
+          <label className="stack" style={{ gap: 3, flex: '1 1 120px' }}>
+            <span style={{ fontSize: 12 }}>Supplier cost</span>
+            <input
+              className="select"
+              inputMode="decimal"
+              value={form.productCost}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('productCost', event.target.value)
+              }
+            />
+          </label>
+          <label className="stack" style={{ gap: 3, flex: '1 1 90px' }}>
+            <span style={{ fontSize: 12 }}>Cost currency</span>
+            <input
+              className="select"
+              maxLength={3}
+              value={form.productCurrency}
+              placeholder="USD"
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('productCurrency', event.target.value)
+              }
+            />
+          </label>
+          <label className="stack" style={{ gap: 3, flex: '1 1 120px' }}>
+            <span style={{ fontSize: 12 }}>Supplier shipping</span>
+            <input
+              className="select"
+              inputMode="decimal"
+              value={form.shippingCost}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('shippingCost', event.target.value)
+              }
+            />
+          </label>
+          <label className="stack" style={{ gap: 3, flex: '1 1 90px' }}>
+            <span style={{ fontSize: 12 }}>Shipping currency</span>
+            <input
+              className="select"
+              maxLength={3}
+              value={form.shippingCurrency}
+              placeholder="USD"
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('shippingCurrency', event.target.value)
+              }
+            />
+          </label>
+          <label className="stack" style={{ gap: 3, flex: '1 1 90px' }}>
+            <span style={{ fontSize: 12 }}>Transit days</span>
+            <input
+              className="select"
+              inputMode="numeric"
+              value={form.shippingDays}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                set('shippingDays', event.target.value)
+              }
+            />
+          </label>
+        </div>
+
+        <label className="stack" style={{ gap: 3 }}>
+          <span style={{ fontSize: 12 }}>Note</span>
+          <input
+            className="select"
+            value={form.note}
+            onChange={(event: ChangeEvent<HTMLInputElement>) => set('note', event.target.value)}
+            placeholder="Verified manually in Tradelle"
+          />
+        </label>
+      </div>
+
+      <div className="row" style={{ gap: 8, marginTop: 12 }}>
+        <button type="button" className="btn btn--sm" onClick={submit} disabled={saving}>
+          {saving ? 'Saving…' : 'Save verification'}
+        </button>
+        <button type="button" className="btn btn--sm" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </Modal>
   );
 }

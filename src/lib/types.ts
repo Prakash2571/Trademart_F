@@ -1314,6 +1314,96 @@ export interface ScoreHistoryEntry {
   note: string | null;
 }
 
+/* --------------------------------------------------------- sourceability -- */
+
+export type SupplierAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'UNKNOWN';
+export type SupplierAvailabilitySource = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API';
+export type SupplierProvider = 'TRADELLE' | 'OTHER' | 'UNKNOWN';
+export type VariantCoverage = 'FULL' | 'PARTIAL' | 'NONE' | 'UNKNOWN';
+
+/**
+ * The current, freshness-aware sourceability verdict. Distinct from `availability`, which
+ * is the historically recorded value - a check can be AVAILABLE yet NEEDS_RECHECK if stale.
+ */
+export type CurrentSourceability =
+  | 'SOURCEABLE'
+  | 'PARTIALLY_SOURCEABLE'
+  | 'NEEDS_RECHECK'
+  | 'NOT_SOURCEABLE'
+  | 'UNVERIFIED';
+
+export interface SupplierVariantAvailability {
+  supplierVariantId: string | null;
+  sku: string | null;
+  title: string;
+  optionValues: Record<string, string>;
+  availability: SupplierAvailability;
+  stockKnown: boolean;
+  cost: number | null;
+  currencyCode: string | null;
+  checkedAt: string | null;
+}
+
+export interface SupplierEvidence {
+  source: string;
+  value: string;
+}
+
+/** The supplier verification stored on a candidate. Evidence, never a live fetch. */
+export interface SupplierInfo {
+  provider: SupplierProvider;
+  supplierProductId: string | null;
+  sourceUrl: string | null;
+  availability: SupplierAvailability;
+  availabilitySource: SupplierAvailabilitySource;
+  checkedAt: string | null;
+  observedAt: string | null;
+  note: string | null;
+  stockKnown: boolean;
+  productAvailable: boolean | null;
+  productCost: number | null;
+  productCurrency: string | null;
+  shippingCost: number | null;
+  shippingCurrency: string | null;
+  shippingDays: number | null;
+  variants: SupplierVariantAvailability[];
+  evidence: SupplierEvidence[];
+}
+
+/** The freshness-aware sourceability verdict returned by the backend. */
+export interface SourceabilityResult {
+  provider: SupplierProvider;
+  availability: SupplierAvailability;
+  availabilitySource: SupplierAvailabilitySource;
+  checkedAt: string | null;
+  freshness: Freshness;
+  current: CurrentSourceability;
+  variantCoverage: VariantCoverage;
+  stockKnown: boolean;
+  supplierProductId: string | null;
+  sourceUrl: string | null;
+  productCost: number | null;
+  productCurrency: string | null;
+  shippingCost: number | null;
+  shippingCurrency: string | null;
+  shippingDays: number | null;
+  variants: SupplierVariantAvailability[];
+  reasons: string[];
+  pushEligible: boolean;
+  block: 'SUPPLIER_UNAVAILABLE' | 'SUPPLIER_AVAILABILITY_UNKNOWN' | 'SUPPLIER_AVAILABILITY_STALE' | null;
+  confidencePenalty: number;
+}
+
+/** The per-candidate sourceability summary in the shortlist meta. */
+export interface SourceabilitySummary {
+  provider: SupplierProvider;
+  availability: SupplierAvailability;
+  current: CurrentSourceability;
+  freshness: Freshness;
+  variantCoverage: VariantCoverage;
+  finalRecommendation: Recommendation | null;
+}
+
 export interface ProductCandidate {
   id: string;
   source: CandidateSource;
@@ -1326,6 +1416,8 @@ export interface ProductCandidate {
   market: TargetMarket;
   commercials: CandidateCommercials;
   manualResearch: ManualResearchEntry;
+  /** Recorded supplier verification: whether this product can actually be sourced. Null = never recorded. */
+  supplier: SupplierInfo | null;
   factors: FactorScore[];
   /**
    * How good the OPPORTUNITY looks. Null means not scored - never a low score.
@@ -1494,6 +1586,32 @@ export interface AnalyzeResult {
   decisionHash: string;
   /** Whether the stored score no longer matches the candidate's current inputs. */
   scoreIsStale: boolean;
+  /** The supplier sourceability verdict at analysis time (analyze meta). */
+  sourceability?: SourceabilityResult;
+}
+
+/** POST /api/intelligence/candidates/:id/supplier-verification body. */
+export interface SupplierVerificationInput {
+  provider: SupplierProvider;
+  supplierProductId: string | null;
+  sourceUrl: string | null;
+  availability: SupplierAvailability;
+  observedAt: string | null;
+  productCost: number | null;
+  productCurrency: string | null;
+  shippingCost: number | null;
+  shippingCurrency: string | null;
+  shippingDays: number | null;
+  stockKnown: boolean;
+  variants: {
+    supplierVariantId: string | null;
+    sku: string | null;
+    title: string;
+    availability: SupplierAvailability;
+    cost: number | null;
+    currencyCode: string | null;
+  }[];
+  note: string | null;
 }
 
 /**
@@ -1527,6 +1645,10 @@ export interface CandidateDecision {
   policy: PricingPolicy;
   warnings: string[];
   actions: AllowedActions;
+  /** The supplier verdict this decision was computed against (from the same analysis). */
+  sourceability: SourceabilityResult;
+  /** The FINAL, supplier-gated recommendation the operator is approving. */
+  finalRecommendation: Recommendation | null;
 }
 
 /* ------------------------------------------------------------ duplicates -- */
