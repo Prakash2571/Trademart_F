@@ -337,10 +337,12 @@ interface FormState {
   region: string;
   horizonDays: number;
   supplierCost: string;
+  supplierCurrency: string;
   shippingCost: string;
-  currency: string;
+  shippingCurrency: string;
   shippingDays: string;
   expectedSellingPrice: string;
+  sellingCurrency: string;
   averageMonthlySearches: string;
   momentumPercentage: string;
   competitionIndex: string;
@@ -354,12 +356,16 @@ interface FormState {
 /*
  * No GB/GBP here.
  *
- * The target country and the currency used to default to 'GB'/'GBP' - literals that were
+ * The target country and the currencies used to default to 'GB'/'GBP' - literals that were
  * right for whoever wrote the form and wrong for everyone else, and worse, invisible: an
  * operator in another market would submit GB/GBP without noticing the boxes were already
- * filled. Target country is now required and starts blank; currency is prefilled from the
- * connected store's own currency (see CandidateForm) and left blank when that is unknown,
- * so the value is either the operator's or the store's, never a guess baked into the code.
+ * filled. Target country is now required and starts blank.
+ *
+ * The three money amounts each carry their OWN currency, because a supplier can genuinely
+ * bill in USD while the store sells in INR. They are independent fields; supplier and
+ * shipping mirror each other only as an untouched convenience, and the selling currency is
+ * prefilled from the connected store (see CandidateForm) and left blank when unknown - so
+ * every value is either the operator's or the store's, never a guess baked into the code.
  */
 const EMPTY_FORM: FormState = {
   title: '',
@@ -371,10 +377,12 @@ const EMPTY_FORM: FormState = {
   region: '',
   horizonDays: 30,
   supplierCost: '',
+  supplierCurrency: '',
   shippingCost: '',
-  currency: '',
+  shippingCurrency: '',
   shippingDays: '',
   expectedSellingPrice: '',
+  sellingCurrency: '',
   averageMonthlySearches: '',
   momentumPercentage: '',
   competitionIndex: '',
@@ -406,27 +414,52 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
 
   /*
-   * The store's own currency, used to prefill the currency box - "shop config or blank",
-   * never a hard-coded GBP. Prefilled only while the field is still untouched, so it can
-   * never overwrite what the operator typed, and it stays blank if the store currency is
-   * unknown (an unlabelled amount is refused downstream rather than guessed).
+   * The store's own currency, used to prefill the SELLING currency - "shop config or
+   * blank", never a hard-coded GBP. Prefilled only while the selling field is untouched,
+   * so it can never overwrite what the operator typed, and it stays blank if the store
+   * currency is unknown (an unlabelled amount is refused downstream rather than guessed).
    */
   const shop = useApi<ShopifyStatus>('/shopify/status');
-  const [currencyTouched, setCurrencyTouched] = useState(false);
   const storeCurrency = shop.data?.shop?.currencyCode ?? null;
+  /*
+   * Which currency fields the operator has touched. Supplier and shipping mirror each
+   * other as a convenience UNTIL the operator edits shipping independently; selling is
+   * prefilled from the shop until touched. All three remain independent in state - the
+   * mirroring is a UI nicety, not a shared value, so a USD supplier / INR selling case is
+   * always expressible.
+   */
+  const [shippingCurrencyTouched, setShippingCurrencyTouched] = useState(false);
+  const [sellingCurrencyTouched, setSellingCurrencyTouched] = useState(false);
 
   useEffect(() => {
-    if (!currencyTouched && form.currency === '' && storeCurrency !== null) {
+    if (!sellingCurrencyTouched && form.sellingCurrency === '' && storeCurrency !== null) {
       setForm((current) =>
-        current.currency === '' ? { ...current, currency: storeCurrency } : current,
+        current.sellingCurrency === ''
+          ? { ...current, sellingCurrency: storeCurrency }
+          : current,
       );
     }
-  }, [storeCurrency, currencyTouched, form.currency]);
+  }, [storeCurrency, sellingCurrencyTouched, form.sellingCurrency]);
 
   const set = useCallback(
     <K extends keyof FormState>(key: K, value: FormState[K]) =>
       setForm((current) => ({ ...current, [key]: value })),
     [],
+  );
+
+  /*
+   * Supplier currency drives the shipping currency for convenience, but only while the
+   * operator has not set shipping independently. Once they do, the two never re-couple -
+   * they are genuinely separate fields.
+   */
+  const setSupplierCurrency = useCallback(
+    (value: string) =>
+      setForm((current) => ({
+        ...current,
+        supplierCurrency: value,
+        ...(shippingCurrencyTouched ? {} : { shippingCurrency: value }),
+      })),
+    [shippingCurrencyTouched],
   );
 
   const submit = async (event: FormEvent) => {
@@ -503,13 +536,17 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
           horizonDays: form.horizonDays,
         },
         commercials: {
+          // Each amount carries its OWN currency - no shared field, so a USD supplier cost
+          // against an INR selling price is stored truthfully. The backend blocks PRICING
+          // across mismatched currencies (CURRENCY_MISMATCH); it never relabels one as
+          // another, and neither does this form.
           supplierCost: supplierCost.value,
-          supplierCurrency: textOrNull(form.currency),
+          supplierCurrency: textOrNull(form.supplierCurrency),
           shippingCost: shippingCost.value,
-          shippingCurrency: textOrNull(form.currency),
+          shippingCurrency: textOrNull(form.shippingCurrency),
           shippingDays: shippingDays.value,
           expectedSellingPrice: expectedSellingPrice.value,
-          expectedSellingCurrency: textOrNull(form.currency),
+          expectedSellingCurrency: textOrNull(form.sellingCurrency),
           costObservedAt: textOrNull(form.observedAt),
         },
         manualResearch: {
@@ -531,7 +568,8 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
       });
 
       setForm(EMPTY_FORM);
-      setCurrencyTouched(false);
+      setShippingCurrencyTouched(false);
+      setSellingCurrencyTouched(false);
       onCreated();
     } catch (caught: unknown) {
       setError(
@@ -658,6 +696,13 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
           and a loss-making product.
         </div>
 
+        <p className="muted" style={{ fontSize: 11, marginTop: 0 }}>
+          Each amount has its own currency. A supplier can bill in one currency while you
+          sell in another — that is stored exactly as entered. Trademart has no exchange-rate
+          source, so if the currencies differ it will refuse to calculate a margin rather
+          than guess one; it never relabels a cost as a different currency.
+        </p>
+
         <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
           <Field label="Supplier cost">
             <input
@@ -666,6 +711,17 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
               inputMode="decimal"
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('supplierCost', event.target.value)
+              }
+            />
+          </Field>
+          <Field label="Supplier cost currency" hint="e.g. USD. What the supplier bills in.">
+            <input
+              className="select"
+              value={form.supplierCurrency}
+              maxLength={3}
+              placeholder="USD"
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setSupplierCurrency(event.target.value)
               }
             />
           </Field>
@@ -680,20 +736,21 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
             />
           </Field>
           <Field
-            label="Currency"
+            label="Shipping currency"
             hint={
-              storeCurrency === null
-                ? 'All three amounts, same currency'
-                : `All three amounts, same currency. Prefilled from your store (${storeCurrency}).`
+              shippingCurrencyTouched
+                ? 'Independent of the supplier cost currency.'
+                : 'Follows the supplier currency until you change it.'
             }
           >
             <input
               className="select"
-              value={form.currency}
+              value={form.shippingCurrency}
               maxLength={3}
+              placeholder="USD"
               onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                setCurrencyTouched(true);
-                set('currency', event.target.value);
+                setShippingCurrencyTouched(true);
+                set('shippingCurrency', event.target.value);
               }}
             />
           </Field>
@@ -715,6 +772,24 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('expectedSellingPrice', event.target.value)
               }
+            />
+          </Field>
+          <Field
+            label="Selling currency"
+            hint={
+              storeCurrency === null
+                ? 'The currency the product will sell in.'
+                : `The currency the product will sell in. Prefilled from your store (${storeCurrency}).`
+            }
+          >
+            <input
+              className="select"
+              value={form.sellingCurrency}
+              maxLength={3}
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                setSellingCurrencyTouched(true);
+                set('sellingCurrency', event.target.value);
+              }}
             />
           </Field>
         </div>

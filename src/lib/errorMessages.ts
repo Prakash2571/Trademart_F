@@ -116,6 +116,14 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
     offerRetry: false,
     offerRefresh: true,
   },
+  PUSH_CLAIM_LOST: {
+    title: 'Another operation took over this push',
+    action:
+      'Nothing was created here. Another push or recovery operation took ownership of this candidate. Refresh the candidate to see its current state before retrying.',
+    tone: 'warning',
+    offerRetry: false,
+    offerRefresh: true,
+  },
   RESEARCH_PUSH_SAFETY: {
     title: 'A product may be visible - check Shopify now',
     action:
@@ -318,6 +326,9 @@ export function isNoOpFailure(code: string): boolean {
     // so telling the operator "nothing changed" would be a dangerous lie.
     code === 'RECOMMENDATION_CHANGED' ||
     code === 'RESEARCH_ALREADY_PUSHED' ||
-    code === 'RESEARCH_PUSH_IN_PROGRESS'
+    code === 'RESEARCH_PUSH_IN_PROGRESS' ||
+    // Ownership was taken over before this push created anything. Like the others here,
+    // and UNLIKE RESEARCH_PUSH_SAFETY (where a product exists), nothing was created.
+    code === 'PUSH_CLAIM_LOST'
   );
 }
