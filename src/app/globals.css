@@ -1688,3 +1688,75 @@ input[type="radio"] {
     transition: none;
   }
 }
+
+
+/* =========================================================================
+   Sliding sidebar + top-aligned nav header
+   -------------------------------------------------------------------------
+   The sidebar slides in and out. On desktop it is pulled left by its own width
+   with a negative margin, which also reclaims the space so the content expands
+   smoothly. Its header is sized to the topbar height so the two bars line up
+   across the top ("same nav length"). Toggled by .shell--nav-collapsed, set on
+   the shell by AppShell.
+   ========================================================================= */
+@media (min-width: 901px) {
+  .sidebar {
+    transition: margin-left 0.24s ease;
+  }
+
+  .shell--nav-collapsed .sidebar {
+    margin-left: calc(-1 * var(--sidebar-width));
+  }
+
+  /* Match the sidebar header height to the topbar (68px) so they align. */
+  .sidebar__brand {
+    min-height: 68px;
+    height: 68px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    box-sizing: border-box;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+/* On mobile the sidebar is a full-width horizontal bar, so a margin slide would
+   only shift it partly off screen. Hide it outright when collapsed instead. */
+@media (max-width: 900px) {
+  .shell--nav-collapsed .sidebar {
+    display: none;
+  }
+}
+
+/* Groups the hamburger with the page title on the left of the topbar. */
+.topbar__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* The hamburger that slides the sidebar in and out. */
+.nav-toggle {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.nav-toggle:hover {
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-hover);
+  color: #fff;
+}
