@@ -1,9 +1,23 @@
 'use client';
 
 /**
- * Storefront diagnostics.
+ * Storefront operations.
  *
- * READ-ONLY, and capability-driven rather than hardcoded: every control is
+ * OPERATOR-ONLY, AND NOT THE PUBLIC STORE
+ * ---------------------------------------
+ * This page is the operational view of storefronts that live elsewhere. It renders
+ * no customer-facing content and is not a store: the themed Online Store is Shopify's
+ * own, and the custom headless storefront is a separate deployed application with its
+ * own credentials. Mixing a public store into this authenticated admin layout would
+ * put operator session cookies on customer page loads.
+ *
+ * Two independent channels, reported separately, because they genuinely are:
+ *   Headless channel  publication state of the custom storefront
+ *   Online Store      theme diagnostics for the themed store
+ * A product on one is not thereby on the other, so the page never merges them into a
+ * single "storefront" verdict.
+ *
+ * READ-ONLY on themes, and capability-driven rather than hardcoded: every control is
  * rendered from what GET /api/storefront/status reports the backend can
  * actually do. Theme editing is not implemented, so no editing control appears
  * here at all.
@@ -19,6 +33,7 @@ import { useState } from 'react';
 
 import { Badge, Callout, Card, EmptyState, ErrorState, PageHeader } from '@/components/ui';
 import { DataTable, type Column } from '@/components/DataTable';
+import { HeadlessStorefrontCard } from '@/components/HeadlessStorefrontCard';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiGet } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
@@ -36,8 +51,8 @@ export default function StorefrontPage() {
   return (
     <>
       <PageHeader
-        title="Storefront"
-        description="Theme diagnostics for the connected Shopify store. Read-only: Trademart never modifies the live theme."
+        title="Storefront operations"
+        description="Sales-channel and theme diagnostics for the connected Shopify store. Not the public store itself: the headless storefront is a separate application, and Trademart never modifies the live theme."
       />
       <StorefrontConsole />
     </>
@@ -58,6 +73,13 @@ function StorefrontConsole() {
 
   return (
     <div className="stack">
+      {/*
+        First, and independent of everything below. The headless channel is where
+        customers actually buy on a custom store, and its readiness has nothing to do
+        with themes - a shop can have a perfect live theme and a headless channel that
+        is not configured at all.
+      */}
+      <HeadlessStorefrontCard />
       <CapabilityCard status={status} />
       <ThemeListCard themes={themes} />
       <ThemeFileReader

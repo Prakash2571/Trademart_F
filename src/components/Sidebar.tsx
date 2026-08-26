@@ -41,7 +41,10 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/pricing', label: 'Pricing', icon: '%' },
   { href: '/automation', label: 'Automation', icon: '⚡' },
   { href: '/suppliers', label: 'Suppliers', icon: '⛃' },
-  { href: '/storefront', label: 'Storefront', icon: '◫' },
+  // "Storefront ops", not "Storefront": this is the operational view of the sales
+  // channels, not the public store. The customer-facing headless storefront is a
+  // separate application and is deliberately not reachable from the admin nav.
+  { href: '/storefront', label: 'Storefront ops', icon: '◫' },
   // Read-only history of every change and every refused attempt. Placed before
   // Settings because it is an operational view, not configuration.
   { href: '/audit', label: 'Audit trail', icon: '⎘' },

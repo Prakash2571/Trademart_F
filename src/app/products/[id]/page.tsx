@@ -34,6 +34,7 @@ import {
 } from '@/lib/capabilities';
 import { formatDateTime, formatMoney, formatNumber, shortGid } from '@/lib/format';
 import type {
+  HeadlessVisibility,
   LocationDto,
   ManualCostRecord,
   ProductDto,
@@ -80,6 +81,7 @@ function ProductDetail({ productId }: { productId: string }) {
   const writeVerdict = describeCapability(caps.data, 'products.write');
   const inventoryVerdict = describeCapability(caps.data, 'inventory.write');
   const publishVerdict = describeCapability(caps.data, 'products.publish');
+  const headlessPublishVerdict = describeCapability(caps.data, 'headless.publish');
 
   const costIndex = useMemo(() => {
     const index = new Map<string, ManualCostRecord>();
@@ -113,7 +115,11 @@ function ProductDetail({ productId }: { productId: string }) {
   return (
     <div className="stack">
       <SummaryCard product={data} />
-      <PublicationSection product={data} verdict={publishVerdict} />
+      <PublicationSection
+        product={data}
+        verdict={publishVerdict}
+        headlessVerdict={headlessPublishVerdict}
+      />
       <DetailsEditor product={data} verdict={writeVerdict} onSaved={refresh} />
       <TagEditor product={data} verdict={writeVerdict} onSaved={refresh} />
       <VariantEditor
@@ -130,30 +136,46 @@ function ProductDetail({ productId }: { productId: string }) {
 /* ------------------------------------------------------------ publication -- */
 
 /**
- * Publication state + publish/unpublish. Publishing is distinct from ACTIVE
- * status: a product can be ACTIVE yet invisible because it is not on a channel.
- * The controls are capability-gated on products.publish.
+ * Publication state + publish/unpublish, per channel.
+ *
+ * Publishing is distinct from ACTIVE status: a product can be ACTIVE yet invisible
+ * because it is not on a channel. And the channels are distinct from each other -
+ * the themed Online Store and a custom headless storefront are separate
+ * publications, so being on one says nothing about the other.
+ *
+ * Online Store controls are gated on products.publish; the headless control on
+ * headless.publish, which needs its own configured channel and write_publications.
  */
 function PublicationSection({
   product,
   verdict,
+  headlessVerdict,
 }: {
   product: ProductDto;
   verdict: CapabilityVerdict;
+  headlessVerdict: CapabilityVerdict;
 }) {
   const encoded = encodeURIComponent(product.shopifyProductId);
   const state = useApi<{ publications: { publicationId: string; name: string; isPublished: boolean }[] }>(
     `/shopify/products/${encoded}/publications`,
   );
-  const [busy, setBusy] = useState<'publish' | 'unpublish' | null>(null);
+  // Separate request because it answers a separate question. The list above says
+  // which channels exist and their flags; this says whether the CUSTOM storefront
+  // can actually sell the product, which needs ACTIVE plus confirmed publication to
+  // the headless channel specifically.
+  const headless = useApi<HeadlessVisibility>(
+    `/shopify/products/${encoded}/headless-visibility`,
+  );
+  const [busy, setBusy] = useState<'publish' | 'unpublish' | 'publish-headless' | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
 
-  const act = async (kind: 'publish' | 'unpublish') => {
+  const act = async (kind: 'publish' | 'unpublish' | 'publish-headless') => {
     setBusy(kind);
     setError(null);
     try {
       await apiPost<unknown>(`/shopify/products/${encoded}/${kind}`, {});
       state.refetch();
+      headless.refetch();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught : new ApiError('UNKNOWN', `${kind} failed.`, 0));
     } finally {
@@ -176,6 +198,22 @@ function PublicationSection({
             title={verdict.reason ?? 'Publish to the Online Store'}
           >
             {busy === 'publish' ? 'Publishing…' : 'Publish to Online Store'}
+          </button>
+          {/*
+            A DELIBERATE second button rather than a channel dropdown on the first.
+            The two channels are different storefronts with different audiences, and
+            an operator publishing to one should never be one mis-click from
+            publishing to the other. The backend takes no channel from the request
+            body either - it reads the configured headless channel - so neither this
+            control nor a crafted request can aim it elsewhere.
+          */}
+          <button
+            className="btn btn--sm"
+            onClick={() => act('publish-headless')}
+            disabled={busy !== null || !headlessVerdict.available}
+            title={headlessVerdict.reason ?? 'Publish to the configured headless storefront channel'}
+          >
+            {busy === 'publish-headless' ? 'Publishing…' : 'Publish to headless'}
           </button>
           <button
             className="btn btn--sm"
@@ -228,8 +266,76 @@ function PublicationSection({
             status is ACTIVE.
           </Callout>
         )}
+
+        <HeadlessVisibilityRow headless={headless} />
       </div>
     </Card>
+  );
+}
+
+/**
+ * Headless storefront sellability for this product.
+ *
+ * Kept visually distinct from the channel badge list above because it is a
+ * CONCLUSION, not another flag: it is the conjunction of ACTIVE status and confirmed
+ * headless publication. The two most confusing states an operator hits are shown
+ * explicitly rather than left to be inferred from two separate badges:
+ *
+ *   ACTIVE, on the Online Store, absent from headless  -> not sellable on the custom store
+ *   published to headless but DRAFT                    -> still not sellable
+ *
+ * UNKNOWN is rendered as its own thing, never as "no". The backend supplies the
+ * sentence; re-deriving it here is how the console and the API drift apart.
+ */
+function HeadlessVisibilityRow({
+  headless,
+}: {
+  headless: ReturnType<typeof useApi<HeadlessVisibility>>;
+}) {
+  if (headless.loading && headless.data === null) {
+    return <p className="muted">Loading headless storefront state…</p>;
+  }
+  if (headless.error !== null) {
+    return (
+      <p className="muted">
+        Could not read headless storefront state: {headless.error.message}
+      </p>
+    );
+  }
+  const data = headless.data;
+  if (data === null) return null;
+
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="muted">Headless storefront:</span>
+        {data.sellableOnHeadlessStorefront ? (
+          <Badge tone="success" dot title={data.reason}>
+            sellable
+          </Badge>
+        ) : (
+          <Badge
+            tone={data.headless === 'UNKNOWN' ? 'neutral' : 'warning'}
+            title={data.reason}
+          >
+            not sellable
+          </Badge>
+        )}
+        <Badge
+          tone={
+            data.headless === 'PUBLISHED'
+              ? 'success'
+              : data.headless === 'UNPUBLISHED'
+                ? 'warning'
+                : 'neutral'
+          }
+        >
+          channel: {data.headless.toLowerCase()}
+        </Badge>
+        <Badge tone="neutral">online store: {data.onlineStore.toLowerCase()}</Badge>
+      </div>
+      <p className="muted">{data.reason}</p>
+    </div>
   );
 }
 
