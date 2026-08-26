@@ -542,6 +542,59 @@ export interface ShopifyCapabilities {
   note: string;
 }
 
+/* ------------------------------------------- headless storefront channel -- */
+
+/**
+ * Publication state on ONE channel, and deliberately three-valued.
+ *
+ * UNKNOWN is not UNPUBLISHED. "Shopify reported this channel as unpublished" and
+ * "the app could not see this channel at all" have different causes and different
+ * fixes, and only one of them is a merchant decision. Both block a sale.
+ */
+export type ChannelPublicationStatus = 'PUBLISHED' | 'UNPUBLISHED' | 'UNKNOWN';
+
+/**
+ * Readiness of the CUSTOM headless storefront channel.
+ *
+ * Each flag is reported separately because each failure has a different fix. A
+ * single "ready: false" would send an operator hunting through Shopify.
+ */
+export interface HeadlessChannelStatus {
+  /** An operator has named the channel in configuration. */
+  channelConfigured: boolean;
+  /** How it was named - publication GID or name. Never a secret. */
+  configuredAs: string | null;
+  /** Shopify confirmed a publication matching that configuration. */
+  channelResolved: boolean;
+  channel: { id: string; name: string } | null;
+  /** write_publications is granted, so publishing from here is possible. */
+  canPublish: boolean;
+  /** read_publications is granted, without which nothing can be confirmed. */
+  canReadPublications: boolean;
+  /**
+   * Every precondition the BACKEND can verify. Explicitly NOT a promise that the
+   * storefront application is deployed or that its Storefront API token works -
+   * that token lives in the storefront app, which the backend cannot see.
+   */
+  publicationReady: boolean;
+  reason: string;
+  /** False when the token strategy does not report scopes (static tokens do not). */
+  scopesKnown?: boolean;
+}
+
+/** Whether a customer can buy a given product on the custom headless storefront. */
+export interface HeadlessVisibility {
+  shopifyProductId: string;
+  /** DRAFT | ACTIVE | ARCHIVED, or null when Shopify withheld it. */
+  status: string | null;
+  isActive: boolean;
+  onlineStore: ChannelPublicationStatus;
+  headless: ChannelPublicationStatus;
+  /** The conjunction: ACTIVE AND confirmed headless publication. Gate on this. */
+  sellableOnHeadlessStorefront: boolean;
+  reason: string;
+}
+
 /* ----------------------------------------------------- storefront/themes -- */
 
 export interface ThemeDto {
