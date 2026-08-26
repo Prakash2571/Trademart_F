@@ -136,13 +136,20 @@ function ProductDetail({ productId }: { productId: string }) {
 /* ------------------------------------------------------------ publication -- */
 
 /**
- * Publication state + publish/unpublish. Publishing is distinct from ACTIVE
- * status: a product can be ACTIVE yet invisible because it is not on a channel.
- * The controls are capability-gated on products.publish.
+ * Publication state + publish/unpublish, per channel.
+ *
+ * Publishing is distinct from ACTIVE status: a product can be ACTIVE yet invisible
+ * because it is not on a channel. And the channels are distinct from each other -
+ * the themed Online Store and a custom headless storefront are separate
+ * publications, so being on one says nothing about the other.
+ *
+ * Online Store controls are gated on products.publish; the headless control on
+ * headless.publish, which needs its own configured channel and write_publications.
  */
 function PublicationSection({
   product,
   verdict,
+  headlessVerdict,
 }: {
   product: ProductDto;
   verdict: CapabilityVerdict;
