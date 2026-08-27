@@ -70,6 +70,8 @@ export function ManualCostEditor({
   const [note, setNote] = useState<string>(existing?.note ?? '');
   const [busy, setBusy] = useState<'save' | 'delete' | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
+  /** Arms the irreversible delete. See `remove` below for why this exists. */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const parsed = Number(amount);
   // A cost of 0 is refused here as well as on the backend. Zero is how "unknown"
@@ -104,7 +106,20 @@ export function ManualCostEditor({
     }
   };
 
+  /**
+   * Deleting a manual cost was a single click, and it is not a cosmetic change: the
+   * pricing engine falls back down the cost hierarchy, so removing the only known cost
+   * makes the product unpriceable (COST_UNKNOWN) and changes what automation
+   * recommends. There is no undo - the note and the override flag are gone.
+   *
+   * So it is now two-step, in-place. Deliberately not window.confirm: it is unstyled,
+   * blocked in some embedded contexts, and gives no room to state the consequence.
+   */
   const remove = async () => {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
     setBusy('delete');
     setError(null);
     try {
@@ -227,11 +242,38 @@ export function ManualCostEditor({
             {busy === 'save' ? 'Saving…' : 'Save cost'}
           </button>
           {existing !== null && (
-            <button className="btn" onClick={remove} disabled={busy !== null}>
-              {busy === 'delete' ? 'Removing…' : 'Remove manual cost'}
+            <button
+              className="btn"
+              onClick={remove}
+              disabled={busy !== null}
+              aria-label={
+                confirmingDelete
+                  ? 'Confirm removing the manual cost'
+                  : 'Remove manual cost'
+              }
+            >
+              {busy === 'delete'
+                ? 'Removing…'
+                : confirmingDelete
+                  ? 'Confirm remove'
+                  : 'Remove manual cost'}
+            </button>
+          )}
+          {confirmingDelete && busy === null && (
+            <button className="btn" onClick={() => setConfirmingDelete(false)}>
+              Keep it
             </button>
           )}
         </div>
+
+        {confirmingDelete && (
+          <Callout tone="warning" title="Remove this manual cost?">
+            The pricing engine will fall back to Shopify&apos;s cost per item, or to a
+            supplier API cost if one is available. If neither exists this product becomes
+            unpriceable (COST_UNKNOWN) and automation will refuse to price it. The amount,
+            note and override flag cannot be recovered.
+          </Callout>
+        )}
       </div>
     </Modal>
   );
