@@ -1,0 +1,41 @@
+{
+  // The lint pass.
+  //
+  // WHY THIS IS TYPESCRIPT AND NOT ESLINT
+  // -------------------------------------
+  // ESLint cannot be installed here: package-lock.json can only be regenerated with
+  // npm registry access, and `npm ci` must keep failing loudly when the lockfile and
+  // package.json disagree - so adding `eslint` to package.json without a matching
+  // lockfile entry would break every install rather than add a check. eslint.config.mjs
+  // IS committed, ready to run, with the exact install command in its header; until
+  // someone runs that command from a networked machine, this file plus the repository
+  // guards in src/lib/repoGuards.test.ts are the lint stage, and they run in CI.
+  //
+  // What this catches that `npm run typecheck` does not: dead code. Unused imports,
+  // unused locals, unused parameters, a code path that forgets to return, and a switch
+  // case that falls through. Each of those is either a leftover from a refactor or a
+  // bug, and none of them fail a normal typecheck.
+  //
+  // What it does NOT catch, and what the guards cover instead: React hook dependency
+  // problems, floating promises, unsafe raw HTML, and calls that bypass the central API
+  // client. Those need either ESLint's type-aware rules or a repository-specific rule,
+  // so the ones that matter most here are asserted directly.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+
+    // Dead code.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    // Control-flow mistakes.
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+
+    // An override that does not override anything is a rename that half-happened.
+    "noImplicitOverride": true
+  }
+}

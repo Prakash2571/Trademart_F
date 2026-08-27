@@ -18,14 +18,14 @@ concurrency:
 
 jobs:
   build:
-    name: typecheck, test, build
+    name: typecheck, lint, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -42,9 +42,28 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Lint: dead code and control-flow mistakes (tsconfig.lint.json) - unused
+      # imports, unused locals and parameters, a path that forgets to return, a switch
+      # case that falls through. None of those fail a normal typecheck, and all of them
+      # are either a leftover from a refactor or a bug.
+      #
+      # No --fix anywhere: a CI job that rewrites the tree produces a green build for
+      # code nobody reviewed.
+      #
+      # ESLint itself is NOT run here. eslint.config.mjs is committed and ready, but it
+      # cannot be installed without regenerating package-lock.json, and `npm ci` failing
+      # when the lockfile and package.json disagree is a property worth keeping. The
+      # rules that matter most in the meantime - the API client boundary, unsafe HTML,
+      # credentials in web storage, secrets in NEXT_PUBLIC_, accessibility basics and
+      # confirmation on destructive actions - are asserted directly in
+      # src/lib/repoGuards.test.ts and run in the Test step below. See the header of
+      # eslint.config.mjs for the exact command that turns ESLint on.
+      - name: Lint
+        run: npm run lint
+
       # Unit tests for the framework-free part of src/lib: the API client (session
       # cookie, CSRF header, error normalisation, correlation id), error
-      # presentation, capability verdicts and formatting.
+      # presentation, capability verdicts, formatting, and the repository guards.
       #
       # These run on `tsc` + `node --test`, both of which are already available -
       # see the comment in tsconfig.test.json for why a test framework was not
@@ -76,12 +95,12 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build frontend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           target: runtime
@@ -98,8 +117,9 @@ jobs:
 # Settings -> Branches -> add a rule for `main`:
 #   - Require a pull request before merging
 #   - Require status checks to pass:
-#       "typecheck, test, build"   (renamed from "typecheck, build" when tests
-#                                   were added - update the rule if it was set)
+#       "typecheck, lint, test, build"   (this job has been renamed twice as stages
+#                                         were added - update the rule if it was set)
 #       "docker image"
+#       "no credentials in source"
 #   - Require branches to be up to date before merging
 # ---------------------------------------------------------------------------
