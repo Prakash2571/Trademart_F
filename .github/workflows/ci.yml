@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    name: typecheck, build
+    name: typecheck, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -41,6 +41,17 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Unit tests for the framework-free part of src/lib: the API client (session
+      # cookie, CSRF header, error normalisation, correlation id), error
+      # presentation, capability verdicts and formatting.
+      #
+      # These run on `tsc` + `node --test`, both of which are already available -
+      # see the comment in tsconfig.test.json for why a test framework was not
+      # added. React components are covered by the typechecker and `next build`
+      # below, not here.
+      - name: Test
+        run: npm test
 
       # NEXT_PUBLIC_* values are inlined at build time. `/api` is the production
       # value (same-origin through nginx) and is what should be compile-checked.
@@ -87,7 +98,8 @@ jobs:
 # Settings -> Branches -> add a rule for `main`:
 #   - Require a pull request before merging
 #   - Require status checks to pass:
-#       "typecheck, build"
+#       "typecheck, test, build"   (renamed from "typecheck, build" when tests
+#                                   were added - update the rule if it was set)
 #       "docker image"
 #   - Require branches to be up to date before merging
 # ---------------------------------------------------------------------------
