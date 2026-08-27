@@ -279,10 +279,18 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
   DATABASE_UNAVAILABLE: {
     title: 'No database connection',
     action:
-      'This feature stores data in MongoDB. Set MONGODB_URI on the backend, or check the connection.',
+      'Nothing was changed. Writes need MongoDB for the idempotency record and the audit trail, so the server refuses them rather than applying a change nobody could account for afterwards. Check MONGODB_URI on the backend, then retry.',
     tone: 'danger',
     offerRetry: true,
     offerRefresh: false,
+  },
+  WEBHOOK_NOT_PERSISTED: {
+    title: 'A webhook could not be stored',
+    action:
+      'The delivery was verified but not queued, so the server asked Shopify to send it again rather than losing it. Restore the database connection; Shopify retries on its own schedule.',
+    tone: 'danger',
+    offerRetry: false,
+    offerRefresh: true,
   },
   UNAUTHORIZED: {
     title: 'Not signed in',
@@ -353,6 +361,10 @@ export function isNoOpFailure(code: string): boolean {
     code === 'VALIDATION_ERROR' ||
     code === 'COST_UNKNOWN' ||
     code === 'CURRENCY_MISMATCH' ||
+    // The server refuses a dangerous write outright when MongoDB is down, because
+    // it could neither suppress a duplicate nor record who did it. The refusal
+    // happens BEFORE anything is attempted, so "nothing was changed" is exact.
+    code === 'DATABASE_UNAVAILABLE' ||
     // A stale-decision refusal and an already-pushed/in-progress refusal all create
     // nothing. RESEARCH_PUSH_SAFETY is deliberately EXCLUDED: a product WAS created there,
     // so telling the operator "nothing changed" would be a dangerous lie.

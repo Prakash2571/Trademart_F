@@ -1,0 +1,47 @@
+{
+  // Test build for the framework-free part of src/lib.
+  //
+  // WHY NOT VITEST OR JEST
+  // ----------------------
+  // Both would be new dependencies, and package-lock.json can only be regenerated
+  // with registry access - which the environment this was authored in does not
+  // have. A test suite that cannot be installed reproducibly (`npm ci` must fail
+  // loudly when the lockfile and package.json disagree) is worse than one built on
+  // what is already here: TypeScript, which is already a devDependency, and
+  // `node --test`, which ships with Node 22. This is the same approach the backend
+  // repository uses.
+  //
+  // The consequence is a real boundary: these tests cover pure logic and modules
+  // whose only imports are types - the API client, error presentation, capability
+  // verdicts and formatting. React components need a DOM renderer and are left to
+  // `next build` and the typechecker.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // CommonJS + node resolution so `node --test dist-test/**/*.test.js` can run
+    // the output directly, without a loader or a bundler.
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2022",
+    "lib": ["ES2022", "dom"],
+    "noEmit": false,
+    "outDir": "dist-test",
+    "rootDir": "src",
+    "incremental": false,
+    "isolatedModules": false,
+    "sourceMap": false,
+    "types": ["node"],
+    // The Next plugin is a language-service plugin only, and pulling it in here
+    // would require the next/types machinery this build has no use for.
+    "plugins": []
+  },
+  "include": ["src/lib/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    ".next",
+    "dist-test",
+    // Imports @/hooks/useApi at RUNTIME. The `@/*` alias is resolved by the
+    // bundler, not by Node, so a compiled require('@/hooks/useApi') would throw.
+    // Its pure half lives in capabilityVerdict.ts, which is what the tests cover.
+    "src/lib/capabilities.ts"
+  ]
+}

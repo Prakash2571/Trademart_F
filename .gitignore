@@ -3,6 +3,8 @@ node_modules/
 out/
 build/
 dist/
+# Compiled test output (npm test -> tsc -p tsconfig.test.json)
+dist-test/
 
 # Environment - never commit real values
 .env
