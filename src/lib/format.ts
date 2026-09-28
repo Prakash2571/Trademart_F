@@ -152,6 +152,29 @@ export function storeSubdomain(domain: string | null | undefined): string {
   return domain.trim().replace(/\.myshopify\.com\/?$/i, '');
 }
 
+/**
+ * A supplier classification or research provider as a person would write it.
+ *
+ * Title-casing gets DeoDap wrong ("Deodap"), and "OTHER" is not a name, so the known
+ * values are spelt out.
+ */
+export function supplierName(provider: string | null | undefined): string {
+  switch (provider) {
+    case 'TRADELLE':
+      return 'Tradelle';
+    case 'DEODAP':
+      return 'DeoDap';
+    case 'OTHER':
+      return 'Other supplier';
+    case 'UNKNOWN':
+    case null:
+    case undefined:
+      return 'Unknown supplier';
+    default:
+      return humanise(provider);
+  }
+}
+
 /** Extracts the numeric part of a Shopify GID for display. */
 export function shortGid(gid: string | null | undefined): string {
   if (!gid) return NOT_AVAILABLE;

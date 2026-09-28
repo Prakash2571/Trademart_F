@@ -26,7 +26,22 @@ import {
   parseNumericInput,
   shortGid,
   storeSubdomain,
+  supplierName,
 } from './format';
+
+describe('supplierName', () => {
+  it('spells the suppliers as they spell themselves', () => {
+    assert.equal(supplierName('DEODAP'), 'DeoDap');
+    assert.equal(supplierName('TRADELLE'), 'Tradelle');
+  });
+
+  it('names the catch-alls, and never renders a bare code', () => {
+    assert.equal(supplierName('OTHER'), 'Other supplier');
+    assert.equal(supplierName('UNKNOWN'), 'Unknown supplier');
+    assert.equal(supplierName(null), 'Unknown supplier');
+    assert.equal(supplierName('CJ_DROPSHIPPING'), 'Cj Dropshipping');
+  });
+});
 
 describe('missing values are never rendered as zero', () => {
   it('shows the em dash for null and undefined money', () => {

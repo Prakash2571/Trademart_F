@@ -135,7 +135,7 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
   RESEARCH_SUPPLIER_UNVERIFIED: {
     title: 'Supplier availability not verified',
     action:
-      'Nothing was created. Verify this product is currently available from the supplier (record a Tradelle verification) before pushing.',
+      'Nothing was created. Verify this product is currently available from the supplier (record a Tradelle or DeoDap verification) before pushing.',
     tone: 'warning',
     offerRetry: false,
     offerRefresh: true,
@@ -327,6 +327,22 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
     offerRetry: true,
     offerRefresh: false,
   },
+  // ---- Suppliers ------------------------------------------------------------
+  ENCRYPTION_NOT_CONFIGURED: {
+    title: 'Encryption key missing or changed',
+    action:
+      'Nothing was saved. Credentials are only ever stored encrypted, and the backend has no usable TOKEN_ENCRYPTION_KEY. Set it (generate one with: openssl rand -base64 32), restart the backend, then try again.',
+    tone: 'danger',
+    offerRetry: false,
+    offerRefresh: false,
+  },
+  SUPPLIER_UNAVAILABLE: {
+    title: 'Supplier integration unavailable',
+    action: 'Nothing was changed. Try again later, or do this step with the supplier directly.',
+    tone: 'warning',
+    offerRetry: true,
+    offerRefresh: false,
+  },
 };
 
 const FALLBACK: ErrorPresentation = {
@@ -361,6 +377,9 @@ export function isNoOpFailure(code: string): boolean {
     code === 'VALIDATION_ERROR' ||
     code === 'COST_UNKNOWN' ||
     code === 'CURRENCY_MISMATCH' ||
+    // Supplier credentials are refused outright without an encryption key: nothing is
+    // stored, readable or otherwise.
+    code === 'ENCRYPTION_NOT_CONFIGURED' ||
     // The server refuses a dangerous write outright when MongoDB is down, because
     // it could neither suppress a duplicate nor record who did it. The refusal
     // happens BEFORE anything is attempted, so "nothing was changed" is exact.

@@ -11,7 +11,8 @@ export interface Money {
   raw: string;
 }
 
-export type SupplierClassification = 'TRADELLE' | 'OTHER' | 'UNKNOWN';
+/** Mirrors Trademart_B suppliers/supplier.types.ts. */
+export type SupplierClassification = 'TRADELLE' | 'DEODAP' | 'OTHER' | 'UNKNOWN';
 
 export interface PageMeta {
   hasNextPage: boolean;
@@ -1297,6 +1298,7 @@ export type SeasonState =
 export type CandidateSource =
   | 'MANUAL'
   | 'TRADELLE'
+  | 'DEODAP'
   | 'SHOPIFY_PERFORMANCE'
   | 'GOOGLE_ADS'
   | 'GOOGLE_TRENDS';
@@ -1371,7 +1373,7 @@ export interface ScoreHistoryEntry {
 
 export type SupplierAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'UNKNOWN';
 export type SupplierAvailabilitySource = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API';
-export type SupplierProvider = 'TRADELLE' | 'OTHER' | 'UNKNOWN';
+export type SupplierProvider = 'TRADELLE' | 'DEODAP' | 'OTHER' | 'UNKNOWN';
 export type VariantCoverage = 'FULL' | 'PARTIAL' | 'NONE' | 'UNKNOWN';
 
 /**
@@ -1592,7 +1594,15 @@ export interface CapabilityAvailability {
   limitations: string[];
 }
 
-export type TradelleProviderMode = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API_UNAVAILABLE';
+/** How a supplier with its own Shopify app (Tradelle, DeoDap) reaches Trademart. */
+export type SupplierBridgeMode = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API_UNAVAILABLE';
+export type TradelleProviderMode = SupplierBridgeMode;
+
+export interface SupplierBridgeReport {
+  mode: SupplierBridgeMode;
+  modes: Record<SupplierBridgeMode, string>;
+  documentation: string;
+}
 
 export interface ResearchIntegrationDescriptor {
   key: string;
@@ -1605,11 +1615,9 @@ export interface ResearchIntegrationDescriptor {
 /** GET /api/intelligence/capabilities */
 export interface ResearchCapabilitiesReport {
   capabilities: CapabilityAvailability[];
-  tradelle: {
-    mode: TradelleProviderMode;
-    modes: Record<TradelleProviderMode, string>;
-    documentation: string;
-  };
+  tradelle: SupplierBridgeReport;
+  /** Optional so a console ahead of its backend still renders. */
+  deodap?: SupplierBridgeReport;
   unbuiltIntegrations: ResearchIntegrationDescriptor[];
 }
 
@@ -1748,4 +1756,359 @@ export interface PushAsDraftResult {
   /** Set only when the product could not be verified hidden. Never an ordinary success. */
   safetyIncident: string | null;
   warnings: string[];
+}
+
+
+/* ===========================================================================
+ * DeoDap supplier - mirrors Trademart_B src/suppliers/deodap/*
+ *
+ * Nothing here is ever sent to DeoDap: the backend has no DeoDap API to call
+ * (see `api.available`). Imports come from CSV files, costs from price lists, and
+ * orders are placed with DeoDap by the operator and recorded here.
+ * ======================================================================== */
+
+export type DeodapPricingMode = 'MARKUP' | 'RETAIL';
+
+/**
+ * How orders reach DeoDap. SHOPIFY_APP is the Tradelle model: DeoDap's own Shopify app
+ * picks the orders up. Products created by Trademart's CSV import are always manual.
+ */
+export type DeodapOrderFlow = 'SHOPIFY_APP' | 'MANUAL';
+export type DeodapLineRoute = 'DEODAP_APP' | 'MANUAL';
+export type DeodapOrderRoute = DeodapLineRoute | 'MIXED';
+export type DeodapPriceRounding = 'none' | 'charm99' | 'integer';
+export type DeodapCredentialKind = 'API_KEY' | 'ACCOUNT_LOGIN';
+
+export interface DeodapSettings {
+  orderFlow: DeodapOrderFlow;
+  skuPrefixes: string[];
+  currencyCode: string;
+  vendorName: string;
+  pricingMode: DeodapPricingMode;
+  markupPercent: number;
+  priceRounding: DeodapPriceRounding;
+  includeShippingInPrice: boolean;
+  compareAtFromRetail: boolean;
+}
+
+/** Never contains the credential - only what identifies which account is stored. */
+export interface DeodapCredentialStatus {
+  stored: boolean;
+  kind: DeodapCredentialKind | null;
+  accountLabel: string | null;
+  maskedIdentifier: string | null;
+  updatedAt: string | null;
+  /** False when TOKEN_ENCRYPTION_KEY changed since they were saved. */
+  readable: boolean | null;
+}
+
+/** GET /api/suppliers/deodap/status */
+export interface DeodapStatus {
+  provider: 'DEODAP';
+  databaseConnected: boolean;
+  encryptionConfigured: boolean;
+  settings: DeodapSettings;
+  settingsUpdatedAt: string | null;
+  activeSkuPrefixes: string[];
+  credentials: DeodapCredentialStatus;
+  api: { available: boolean; reason: string };
+  counts: { importedProducts: number; recordedOrders: number } | null;
+}
+
+export type DeodapCatalogField =
+  | 'title'
+  | 'handle'
+  | 'sku'
+  | 'productId'
+  | 'cost'
+  | 'retailPrice'
+  | 'shippingCost'
+  | 'stock'
+  | 'description'
+  | 'productType'
+  | 'tags'
+  | 'option1Name'
+  | 'option1Value'
+  | 'option2Name'
+  | 'option2Value'
+  | 'option3Name'
+  | 'option3Value';
+
+export interface DeodapFieldInfo {
+  field: DeodapCatalogField;
+  label: string;
+  required: boolean;
+  hint: string;
+}
+
+export interface DeodapColumnMapping {
+  fields: Partial<Record<DeodapCatalogField, string>>;
+  imageColumns: string[];
+  /** Fields matched only by a weak column name, e.g. the cost from "Price". */
+  guessed: DeodapCatalogField[];
+}
+
+/** What the operator changed in the mapping. Null un-maps a field. */
+export interface DeodapMappingOverride {
+  fields: Partial<Record<DeodapCatalogField, string | null>>;
+  imageColumns?: string[];
+}
+
+export interface DeodapPricingRule {
+  mode: DeodapPricingMode;
+  markupPercent: number;
+  rounding: DeodapPriceRounding;
+  includeShipping: boolean;
+  compareAtFromRetail: boolean;
+}
+
+export interface DeodapImportVariantDraft {
+  sku: string | null;
+  optionValues: { optionName: string; name: string }[];
+  price: number;
+  compareAtPrice: number | null;
+  cost: number;
+  shippingCost: number | null;
+}
+
+/** Sent back unchanged to import the product. The backend re-validates all of it. */
+export interface DeodapImportDraft {
+  ref: string;
+  title: string;
+  descriptionHtml: string | null;
+  productType: string | null;
+  tags: string[];
+  imageUrls: string[];
+  options: { name: string; values: string[] }[];
+  variants: DeodapImportVariantDraft[];
+  sourceLine: number | null;
+}
+
+export type DeodapImportStatus = 'CLAIMED' | 'CREATED' | 'PARTIAL' | 'FAILED';
+export type DeodapPreviewStatus = 'READY' | 'NEEDS_ATTENTION' | 'ALREADY_IMPORTED' | 'IN_PROGRESS';
+
+export interface DeodapPreviewProduct {
+  ref: string | null;
+  lines: number[];
+  title: string | null;
+  sku: string | null;
+  variantCount: number;
+  optionNames: string[];
+  imageUrls: string[];
+  costMin: number | null;
+  costMax: number | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  compareAtMax: number | null;
+  marginMin: number | null;
+  stock: number | null;
+  inStock: boolean | null;
+  status: DeodapPreviewStatus;
+  existing: {
+    status: DeodapImportStatus;
+    shopifyProductId: string | null;
+    error: string | null;
+    updatedAt: string | null;
+  } | null;
+  issues: string[];
+  warnings: string[];
+  draft: DeodapImportDraft | null;
+}
+
+export interface DeodapFileInfo {
+  sourceFile: string | null;
+  headers: string[];
+  recordCount: number;
+}
+
+/** POST /api/suppliers/deodap/import/preview */
+export interface DeodapImportPreview {
+  file: DeodapFileInfo & { delimiter: 'comma' | 'semicolon' | 'tab' };
+  fields: DeodapFieldInfo[];
+  mapping: DeodapColumnMapping;
+  pricing: DeodapPricingRule;
+  currencyCode: string;
+  vendor: string;
+  /** SHOPIFY_APP: DeoDap's app will NOT send orders for products created here. */
+  orderFlow: DeodapOrderFlow;
+  shopCurrency: string | null;
+  /** When set, nothing may be imported: prices would be in the wrong currency. */
+  currencyProblem: string | null;
+  ledgerChecked: boolean;
+  warnings: string[];
+  products: DeodapPreviewProduct[];
+  summary: {
+    products: number;
+    ready: number;
+    needsAttention: number;
+    alreadyImported: number;
+    inProgress: number;
+  };
+}
+
+export type DeodapImportOutcome = 'CREATED' | 'PARTIAL' | 'SKIPPED' | 'FAILED' | 'NOT_ATTEMPTED';
+
+export interface DeodapImportItemResult {
+  ref: string;
+  title: string;
+  outcome: DeodapImportOutcome;
+  shopifyProductId: string | null;
+  reason: string | null;
+  errorCode: string | null;
+  warnings: string[];
+  costsRecorded: number;
+}
+
+/** POST /api/suppliers/deodap/import - 200, or 207 when anything was not created. */
+export interface DeodapImportBatchResult {
+  results: DeodapImportItemResult[];
+  summary: Record<DeodapImportOutcome, number>;
+  partial: boolean;
+}
+
+/** GET /api/suppliers/deodap/imports */
+export interface DeodapImportRecord {
+  supplierRef: string;
+  title: string;
+  status: DeodapImportStatus;
+  shopifyProductId: string | null;
+  variantCount: number;
+  costMin: number | null;
+  costMax: number | null;
+  currencyCode: string | null;
+  sourceFile: string | null;
+  sourceLine: number | null;
+  error: string | null;
+  importedAt: string | null;
+  updatedAt: string | null;
+  lastCostSyncAt: string | null;
+}
+
+export type DeodapSyncChangeKind = 'COST_CHANGED' | 'UNCHANGED' | 'NO_COST_IN_FILE';
+
+export interface DeodapSyncChange {
+  supplierRef: string;
+  title: string;
+  shopifyProductId: string;
+  shopifyVariantId: string;
+  sku: string | null;
+  line: number;
+  currentCost: number | null;
+  currentShipping: number | null;
+  currentCurrency: string | null;
+  newCost: number | null;
+  newShipping: number | null;
+  changePercent: number | null;
+  kind: DeodapSyncChangeKind;
+  stock: number | null;
+  inStock: boolean | null;
+}
+
+/** POST /api/suppliers/deodap/sync/preview */
+export interface DeodapSyncPreview {
+  currencyCode: string;
+  changes: DeodapSyncChange[];
+  unmatched: { line: number; ref: string | null; title: string | null }[];
+  missing: { supplierRef: string; title: string; shopifyProductId: string }[];
+  summary: {
+    changed: number;
+    unchanged: number;
+    noCost: number;
+    unmatched: number;
+    missing: number;
+    outOfStock: number;
+  };
+  file: DeodapFileInfo;
+  fields: DeodapFieldInfo[];
+  mapping: DeodapColumnMapping;
+  warnings: string[];
+}
+
+/** POST /api/suppliers/deodap/sync */
+export interface DeodapSyncApplyResult {
+  results: {
+    shopifyVariantId: string;
+    outcome: 'UPDATED' | 'SKIPPED' | 'FAILED';
+    reason: string | null;
+  }[];
+  summary: { updated: number; skipped: number; failed: number };
+}
+
+export type DeodapOrderStatus =
+  | 'NOT_PLACED'
+  | 'PLACED'
+  | 'SHIPPED'
+  | 'DELIVERED'
+  | 'CANCELLED'
+  | 'PROBLEM';
+
+export interface DeodapOrderLine {
+  shopifyLineItemId: string;
+  shopifyVariantId: string | null;
+  shopifyProductId: string | null;
+  title: string;
+  sku: string | null;
+  quantity: number;
+  supplierRef: string | null;
+  /** True when Trademart's CSV import created the product - unknown to DeoDap's app. */
+  importedByTrademart: boolean;
+  route: DeodapLineRoute;
+  evidence: string[];
+  unitCost: number | null;
+  unitShippingCost: number | null;
+  currencyCode: string | null;
+}
+
+export interface DeodapForwardingRecord {
+  status: DeodapOrderStatus;
+  supplierOrderId: string | null;
+  trackingCompany: string | null;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  note: string | null;
+  placedVia: 'MANUAL' | 'API';
+  placedAt: string | null;
+  shippedAt: string | null;
+  deliveredAt: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** GET /api/suppliers/deodap/orders (one entry), PUT /api/suppliers/deodap/orders/:id */
+export interface DeodapOrderView {
+  shopifyOrderId: string;
+  name: string;
+  createdAt: string;
+  financialStatus: string | null;
+  fulfillmentStatus: string | null;
+  cancelledAt: string | null;
+  destination: {
+    countryCode: string | null;
+    country: string | null;
+    provinceCode: string | null;
+    province: string | null;
+    city: string | null;
+  } | null;
+  lines: DeodapOrderLine[];
+  otherLineCount: number;
+  /** Who sends the order to DeoDap: DeoDap's Shopify app, the operator, or some lines each. */
+  route: DeodapOrderRoute;
+  supplierCost: { total: number | null; currencyCode: string | null; complete: boolean };
+  /** Progress as Shopify reports it - the same normalisation the dropshipping pages use. */
+  shipment: DropshipShipment;
+  forwarding: DeodapForwardingRecord | null;
+  /** What needs a person, in the backend's words. Empty when nothing does. */
+  attention: string[];
+  needsAction: boolean;
+}
+
+/** GET /api/suppliers/deodap/orders - meta. */
+export interface DeodapOrdersMeta {
+  scanned: number;
+  matched: number;
+  orderFlow: DeodapOrderFlow;
+  processingWarningHours: number;
+  hasNextPage: boolean;
+  endCursor: string | null;
+  degraded?: string[];
 }

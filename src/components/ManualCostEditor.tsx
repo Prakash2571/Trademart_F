@@ -96,6 +96,9 @@ export function ManualCostEditor({
         currencyCode: currencyCode.toUpperCase(),
         override,
         note: note.trim().length > 0 ? note.trim() : null,
+        // Keep the supplier this cost was recorded for (a DeoDap import, say). Without
+        // it the backend defaults the provider to UNKNOWN on every edit.
+        ...(existing !== null ? { provider: existing.provider } : {}),
       });
       onSaved();
       onClose();

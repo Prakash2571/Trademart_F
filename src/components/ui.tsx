@@ -173,7 +173,7 @@ export function fulfillmentTone(status: string | null): BadgeTone {
 }
 
 export function supplierTone(supplier: string): BadgeTone {
-  if (supplier === 'TRADELLE') return 'info';
+  if (supplier === 'TRADELLE' || supplier === 'DEODAP') return 'info';
   if (supplier === 'OTHER') return 'neutral';
   return 'neutral';
 }
