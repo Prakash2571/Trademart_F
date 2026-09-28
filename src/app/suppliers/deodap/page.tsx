@@ -3,12 +3,13 @@
 /**
  * /suppliers/deodap - the DeoDap overview.
  *
- * Three things live here: the DeoDap account (stored encrypted, never shown again),
- * the settings every DeoDap import prices with, and the way into the three working
- * flows - import, cost sync and orders.
+ * DeoDap works the way Tradelle does: its own Shopify app brings products into Shopify
+ * and picks up their orders, and Trademart works on the same Shopify store. Nothing
+ * here talks to DeoDap.
  *
- * The account is stored for the day DeoDap offers an API; nothing uses it yet, and the
- * page says so rather than implying a live connection.
+ * What lives here: how orders reach DeoDap (the app, or the operator), the DeoDap
+ * account (stored encrypted, never shown again, unused until DeoDap offers an API),
+ * the settings DeoDap CSV imports price with, and the way into the other pages.
  */
 
 import Link from 'next/link';
@@ -28,11 +29,12 @@ import {
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiDelete, apiPut } from '@/lib/api';
-import { parsePrefixInput } from '@/lib/deodap';
+import { ORDER_FLOWS, orderFlowLabel, parsePrefixInput } from '@/lib/deodap';
 import { formatDateTime, formatNumber, parseNumericInput } from '@/lib/format';
 import type {
   DeodapCredentialKind,
   DeodapCredentialStatus,
+  DeodapOrderFlow,
   DeodapPriceRounding,
   DeodapPricingMode,
   DeodapSettings,
@@ -50,7 +52,7 @@ export default function DeodapPage() {
     <>
       <PageHeader
         title="DeoDap"
-        description="Import DeoDap products into Shopify as drafts, keep their costs current, and track the orders you place with DeoDap."
+        description="Work with DeoDap through Shopify, the way Trademart works with Tradelle: recognise DeoDap products, manage them, and watch their orders."
       />
       <DeodapNav />
       {status.error !== null ? (
@@ -82,10 +84,20 @@ function Overview({ status, onChanged }: { status: DeodapStatus; onChanged: () =
 
       <div className="grid grid--stats">
         <StatCard
-          label="Products imported"
+          label="Orders reach DeoDap"
+          value={status.settings.orderFlow === 'SHOPIFY_APP' ? "Via DeoDap's app" : 'By hand'}
+          hint={
+            status.settings.orderFlow === 'SHOPIFY_APP'
+              ? 'Like Tradelle - change it in Settings below'
+              : 'You place them - change it in Settings below'
+          }
+          compact
+        />
+        <StatCard
+          label="Imported by Trademart"
           value={formatNumber(status.counts?.importedProducts ?? null)}
           unavailable={status.counts === null}
-          hint="Created in Shopify from a DeoDap file"
+          hint="Created in Shopify from a DeoDap CSV"
         />
         <StatCard
           label="Orders recorded"
@@ -108,7 +120,7 @@ function Overview({ status, onChanged }: { status: DeodapStatus; onChanged: () =
       </div>
 
       <div className="grid grid--two">
-        <NextSteps />
+        <NextSteps flow={status.settings.orderFlow} />
         <AccountCard status={status} onChanged={onChanged} />
       </div>
 
@@ -122,10 +134,47 @@ function Overview({ status, onChanged }: { status: DeodapStatus; onChanged: () =
   );
 }
 
-function NextSteps() {
+const STEP_LIST = { fontSize: 13.5, color: 'var(--text)' } as const;
+
+function NextSteps({ flow }: { flow: DeodapOrderFlow }) {
+  if (flow === 'SHOPIFY_APP') {
+    return (
+      <Card title="How it works - with DeoDap's Shopify app">
+        <p className="muted" style={{ marginTop: 0 }}>
+          The same way Trademart works with Tradelle: DeoDap&apos;s app and Trademart both work
+          on your Shopify store, and never talk to each other directly.
+        </p>
+        <ol className="note-list" style={STEP_LIST}>
+          <li>
+            <strong>Import through DeoDap&apos;s app.</strong> Install DeoDap&apos;s app from the
+            Shopify App Store and add products with it. Only products it imports are sent to
+            DeoDap automatically.
+          </li>
+          <li>
+            <strong>Check they are recognised.</strong> On{' '}
+            <Link href="/products">Products</Link> they should show as DEODAP. If they
+            don&apos;t, add their SKU prefix below, or tag them <span className="mono">DeoDap</span>{' '}
+            in Shopify.
+          </li>
+          <li>
+            <strong>Manage them here.</strong> Prices, publishing, the{' '}
+            <Link href="/products/review">review queue</Link> and automation work on them like any
+            other product. If DeoDap&apos;s app also updates prices, leave pricing to one side
+            so the two don&apos;t overwrite each other.
+          </li>
+          <li>
+            <strong>Watch the orders.</strong> DeoDap&apos;s app picks up the orders.{' '}
+            <Link href="/suppliers/deodap/orders">DeoDap orders</Link> shows each one&apos;s
+            progress and tracking from Shopify, and flags any that have not shipped in time.
+          </li>
+        </ol>
+      </Card>
+    );
+  }
+
   return (
-    <Card title="How it works">
-      <ol className="note-list" style={{ fontSize: 13.5, color: 'var(--text)' }}>
+    <Card title="How it works - placing orders yourself">
+      <ol className="note-list" style={STEP_LIST}>
         <li>
           <strong>Import products.</strong> Download a product list from DeoDap as a CSV and{' '}
           <Link href="/suppliers/deodap/import">import it</Link>. You check the prices first;
@@ -404,6 +453,7 @@ function SettingsCard({
   disabled: boolean;
   onSaved: () => void;
 }) {
+  const [orderFlow, setOrderFlow] = useState<DeodapOrderFlow>(settings.orderFlow);
   const [prefixes, setPrefixes] = useState(settings.skuPrefixes.join(', '));
   const [currency, setCurrency] = useState(settings.currencyCode);
   const [vendor, setVendor] = useState(settings.vendorName);
@@ -436,6 +486,7 @@ function SettingsCard({
       const response = await apiPut<{ settings: DeodapSettings; updatedAt: string }>(
         '/suppliers/deodap/settings',
         {
+          orderFlow,
           skuPrefixes: parsePrefixInput(prefixes),
           currencyCode: currency.trim().toUpperCase(),
           vendorName: vendor.trim(),
@@ -462,9 +513,36 @@ function SettingsCard({
         {error !== null && <ErrorCallout error={error} />}
         {savedAt !== null && (
           <Callout tone="success" title="Settings saved">
-            Saved {formatDateTime(savedAt)}. New imports use them from now on.
+            Saved {formatDateTime(savedAt)}. They apply from now on.
           </Callout>
         )}
+
+        <fieldset className="stack" style={{ gap: 8, border: 0, padding: 0, margin: 0 }}>
+          <legend className="field__label" style={{ marginBottom: 6 }}>
+            How orders reach DeoDap
+          </legend>
+          {ORDER_FLOWS.map((value) => (
+            <label key={value} className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+              <input
+                type="radio"
+                name="deodap-order-flow"
+                value={value}
+                checked={orderFlow === value}
+                onChange={() => setOrderFlow(value)}
+              />
+              <span>
+                {orderFlowLabel(value)}
+                <span className="field__hint" style={{ display: 'block' }}>
+                  {value === 'SHOPIFY_APP'
+                    ? "Trademart watches each order in Shopify and flags any that have not shipped within your dropshipping processing time. Products from Trademart's CSV import still need placing by hand."
+                    : 'Every DeoDap order is flagged until you record it as placed with DeoDap.'}
+                </span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        <div className="divider" style={{ margin: 0 }} />
 
         <div className="form-grid">
           <div className="field">
@@ -519,8 +597,8 @@ function SettingsCard({
 
         <div className="divider" style={{ margin: 0 }} />
         <p className="muted" style={{ margin: 0 }}>
-          Default pricing for imports. You can change it for each import before anything is
-          created.
+          Default pricing for Trademart&apos;s CSV import (products DeoDap&apos;s app imports are
+          priced by the app). You can change it for each import before anything is created.
         </p>
 
         <div className="form-grid">

@@ -45,11 +45,11 @@ export function DeodapNav() {
   );
 }
 
-/** States plainly that Trademart does not talk to DeoDap, and why. */
+/** States plainly that Trademart does not talk to DeoDap itself, and how it works instead. */
 export function DeodapApiNote({ api }: { api: { available: boolean; reason: string } }) {
   if (api.available) return null;
   return (
-    <Callout tone="info" title="Nothing is sent to DeoDap automatically">
+    <Callout tone="info" title="Trademart works with DeoDap through Shopify, like Tradelle">
       {api.reason}
     </Callout>
   );

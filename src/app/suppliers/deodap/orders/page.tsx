@@ -1,23 +1,30 @@
 'use client';
 
 /**
- * /suppliers/deodap/orders - Shopify orders with DeoDap products, and what has been
- * done with DeoDap for each.
+ * /suppliers/deodap/orders - Shopify orders with DeoDap products, and what needs doing.
  *
- * DeoDap has no order API Trademart can call, so the loop is manual and this page
- * makes it quick: see what to order (SKU x quantity), open the order in Shopify for
- * the delivery address, place it with DeoDap, then record DeoDap's order number and,
- * later, the tracking. Trademart stores no customer data for this - the address is
- * read in Shopify, where it already is.
+ * TWO FLOWS, SET ON THE DEODAP PAGE
+ * ---------------------------------
+ *   DeoDap's Shopify app (the Tradelle model): the app picks the orders up by itself.
+ *   This page is then a monitor - each order's progress and tracking as Shopify reports
+ *   them (the same StateBadge the dropshipping pages use), with anything that has not
+ *   shipped in time flagged by the backend.
  *
- * Tracking recorded here is NOT pushed to Shopify yet. The page says so next to it,
- * because an operator who assumed otherwise would leave the customer without tracking.
+ *   By hand: see what to order (SKU x quantity), open the order in Shopify for the
+ *   delivery address, place it with DeoDap, then record DeoDap's order number and,
+ *   later, the tracking.
+ *
+ * Products created by Trademart's CSV import are always by hand - DeoDap's app does not
+ * know them - and the backend says so per order. Trademart stores no customer data for
+ * any of this: the address is read in Shopify, where it already is. Tracking recorded
+ * here is NOT pushed to Shopify, and the page says so wherever it matters.
  */
 
 import Link from 'next/link';
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 
 import { DeodapNav } from '@/components/DeodapUi';
+import { StateBadge } from '@/components/DropshipUi';
 import {
   Badge,
   Callout,
@@ -28,19 +35,22 @@ import {
   PageHeader,
   SkeletonTable,
   financialTone,
-  fulfillmentTone,
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPut } from '@/lib/api';
 import {
   ORDER_STATUSES,
+  dispatchLabel,
+  dispatchTone,
   orderStatusLabel,
-  orderStatusTone,
   orderSummaryText,
+  routeLabel,
+  routeTone,
+  safeExternalUrl,
   shopifyAdminUrl,
 } from '@/lib/deodap';
 import { formatAmount, formatDateTime, formatNumber, humanise } from '@/lib/format';
-import type { DeodapOrderStatus, DeodapOrderView, ShopDto } from '@/lib/types';
+import type { DeodapOrderStatus, DeodapOrdersMeta, DeodapOrderView, ShopDto } from '@/lib/types';
 
 const PRESETS: { label: string; query: string }[] = [
   { label: 'Open orders', query: 'status:open' },
@@ -76,13 +86,13 @@ export default function DeodapOrdersPage() {
 
   const orders = useApi<DeodapOrderView[]>(path, [query, cursor]);
   const shop = useApi<ShopDto>('/shopify/shop');
-  const meta = orders.meta as
-    | { scanned?: number; matched?: number; hasNextPage?: boolean; endCursor?: string | null; degraded?: string[] }
-    | undefined;
+  const meta = orders.meta as Partial<DeodapOrdersMeta> | undefined;
 
   const all = orders.data ?? [];
   const rows = onlyNeedsAction ? all.filter((order) => order.needsAction) : all;
   const storeDomain = shop.data?.myshopifyDomain ?? null;
+  const appFlow = meta?.orderFlow === 'SHOPIFY_APP';
+  const needingAction = all.filter((order) => order.needsAction).length;
 
   const choosePreset = (next: string) => {
     setQuery(next);
@@ -93,19 +103,35 @@ export default function DeodapOrdersPage() {
     <>
       <PageHeader
         title="DeoDap orders"
-        description="Orders with DeoDap products. Place each one with DeoDap, then record DeoDap's order number and tracking here."
+        description="Orders with DeoDap products: where each one is, as Shopify reports it, and what needs you."
       />
       <DeodapNav />
 
       <div className="stack">
-        <Callout tone="info" title="How this works">
-          Trademart cannot send orders to DeoDap - there is no DeoDap order API to call. For
-          each order below, place the listed items with DeoDap (the delivery address is in
-          Shopify), then use <strong>Record</strong> to note DeoDap&apos;s order number and,
-          once shipped, the tracking. Tracking saved here is <strong>not</strong> sent to
-          Shopify yet: fulfil the order in Shopify with the same tracking number so the
-          customer is told.
-        </Callout>
+        {meta?.orderFlow === undefined ? null : appFlow ? (
+          <Callout tone="info" title="DeoDap's Shopify app sends these orders to DeoDap">
+            As with Tradelle, DeoDap&apos;s app picks up orders for the products it imported, and
+            Trademart watches them in Shopify. An order is flagged if nothing has been dispatched{' '}
+            {formatNumber(meta.processingWarningHours ?? null)} hours after it was placed - that is
+            what an order the app never received looks like. Items from Trademart&apos;s CSV import
+            are the exception: DeoDap&apos;s app does not know them, so you place those yourself.
+          </Callout>
+        ) : (
+          <Callout tone="info" title="You place these orders with DeoDap">
+            For each order below, place the listed items with DeoDap (the delivery address is in
+            Shopify), then use <strong>Record</strong> to note DeoDap&apos;s order number and, once
+            shipped, the tracking. Tracking saved here is <strong>not</strong> sent to Shopify:
+            fulfil the order in Shopify with the same tracking number so the customer is told. If
+            you use DeoDap&apos;s Shopify app instead, switch the order flow on the{' '}
+            <Link href="/suppliers/deodap">DeoDap page</Link>.
+          </Callout>
+        )}
+
+        {needingAction > 0 && (
+          <Callout tone="warning" title={`${formatNumber(needingAction)} order(s) on this page need you`}>
+            Each is marked below with the reason.
+          </Callout>
+        )}
 
         {orders.error !== null && <ErrorCallout error={orders.error} onRetry={orders.refetch} />}
 
@@ -157,8 +183,8 @@ export default function DeodapOrdersPage() {
               title="No DeoDap orders here"
               description={
                 onlyNeedsAction && all.length > 0
-                  ? 'Every DeoDap order on this page has been placed or closed.'
-                  : 'No order on this page contains a product identified as DeoDap. Products are recognised by the DeoDap vendor or tag, a configured SKU prefix, or being imported through Trademart.'
+                  ? 'No DeoDap order on this page needs you right now.'
+                  : 'No order on this page contains a product identified as DeoDap. Products are recognised by a vendor, tag or fulfillment service mentioning DeoDap, a configured SKU prefix, or being imported through Trademart.'
               }
             />
           )}
@@ -170,9 +196,9 @@ export default function DeodapOrdersPage() {
                   <tr>
                     <th>Order</th>
                     <th>To</th>
-                    <th>Order from DeoDap</th>
+                    <th>DeoDap items</th>
                     <th className="table__num">DeoDap cost</th>
-                    <th>Shopify</th>
+                    <th>Progress (Shopify)</th>
                     <th>DeoDap</th>
                     <th aria-label="Actions" />
                   </tr>
@@ -244,6 +270,8 @@ function OrderRow({
   const supplierOrderId = forwarding?.supplierOrderId ?? null;
   const trackingNumber = forwarding?.trackingNumber ?? null;
   const trackingCompany = forwarding?.trackingCompany ?? null;
+  const shipment = order.shipment;
+  const trackingLink = safeExternalUrl(shipment.trackingUrls[0]);
   return (
     <tr>
       <td>
@@ -254,7 +282,14 @@ function OrderRow({
           {formatDateTime(order.createdAt)}
         </div>
         {order.needsAction && (
-          <Badge tone={status === 'PROBLEM' ? 'danger' : 'warning'}>needs action</Badge>
+          <>
+            <Badge tone={status === 'PROBLEM' ? 'danger' : 'warning'}>needs you</Badge>
+            <ul className="note-list" style={{ color: 'var(--warning)', maxWidth: 320 }}>
+              {order.attention.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </>
         )}
       </td>
       <td className="muted">{destinationText(order)}</td>
@@ -264,6 +299,9 @@ function OrderRow({
             <li key={line.shopifyLineItemId}>
               <span className="mono">{line.sku ?? line.supplierRef ?? 'no SKU'}</span> ×{' '}
               {formatNumber(line.quantity)} - {line.title}
+              {order.route === 'MIXED' && line.route === 'MANUAL' && (
+                <span className="muted"> (place yourself)</span>
+              )}
             </li>
           ))}
         </ul>
@@ -283,15 +321,29 @@ function OrderRow({
       </td>
       <td>
         <div className="stack" style={{ gap: 4 }}>
+          <StateBadge state={shipment.normalizedStatus} />
           <Badge tone={financialTone(order.financialStatus)}>{humanise(order.financialStatus)}</Badge>
-          <Badge tone={fulfillmentTone(order.fulfillmentStatus)}>
-            {humanise(order.fulfillmentStatus)}
-          </Badge>
-          {order.cancelledAt !== null && <Badge tone="danger">cancelled</Badge>}
+          {shipment.trackingNumbers.length > 0 && (
+            <div className="muted" style={{ fontSize: 12 }}>
+              {shipment.carrier ?? 'Tracking'}:{' '}
+              {trackingLink !== null ? (
+                <a href={trackingLink} target="_blank" rel="noopener noreferrer">
+                  {shipment.trackingNumbers[0]}
+                </a>
+              ) : (
+                shipment.trackingNumbers[0]
+              )}
+              {shipment.trackingNumbers.length > 1 &&
+                ` +${formatNumber(shipment.trackingNumbers.length - 1)}`}
+            </div>
+          )}
         </div>
       </td>
       <td>
-        <Badge tone={orderStatusTone(status)}>{orderStatusLabel(status)}</Badge>
+        <div className="stack" style={{ gap: 4 }}>
+          <Badge tone={routeTone(order.route)}>{routeLabel(order.route)}</Badge>
+          <Badge tone={dispatchTone(order)}>{dispatchLabel(order)}</Badge>
+        </div>
         {supplierOrderId !== null && (
           <div className="mono" style={{ fontSize: 12, marginTop: 4 }}>
             #{supplierOrderId}
@@ -343,7 +395,12 @@ function ForwardingEditor({
   const [error, setError] = useState<ApiError | null>(null);
   const [copied, setCopied] = useState<'yes' | 'failed' | null>(null);
 
-  const summary = orderSummaryText(order);
+  // In a mixed order only the items to place by hand belong in the text to paste.
+  const summary = orderSummaryText(
+    order.route === 'MIXED'
+      ? { name: order.name, lines: order.lines.filter((line) => line.route === 'MANUAL') }
+      : order,
+  );
   const urlProblem =
     trackingUrl.trim().length > 0 && !/^https:\/\/\S+$/i.test(trackingUrl.trim())
       ? 'Use a full https:// link, or leave it empty.'
@@ -389,9 +446,21 @@ function ForwardingEditor({
   return (
     <Modal title={`DeoDap order for ${order.name}`} onClose={busy ? () => {} : onClose}>
       <form className="stack" style={{ gap: 12 }} onSubmit={(event) => void save(event)}>
+        {order.route === 'DEODAP_APP' && (
+          <Callout tone="info" title="DeoDap's app handles this order">
+            There is nothing to place. Record something only if you need to - DeoDap&apos;s order
+            number from the app, or a problem such as an item out of stock.
+          </Callout>
+        )}
+        {order.route === 'MIXED' && (
+          <Callout tone="warning" title="Part of this order is yours to place">
+            DeoDap&apos;s app sends the items it imported. Place the items marked &quot;place
+            yourself&quot; with DeoDap, then record the DeoDap order number here.
+          </Callout>
+        )}
         <div className="field">
           <label className="field__label" htmlFor="forward-summary">
-            What to order from DeoDap
+            {order.route === 'DEODAP_APP' ? 'DeoDap items in this order' : 'What to order from DeoDap'}
           </label>
           <textarea
             id="forward-summary"

@@ -161,9 +161,10 @@ function DeodapCard() {
     >
       <div className="stack" style={{ gap: 10 }}>
         <p style={{ margin: 0 }}>
-          Import DeoDap products from a CSV as Shopify drafts with their DeoDap cost, keep costs
-          current from newer price lists, and record the orders you place with DeoDap. Nothing
-          is sent to DeoDap automatically.
+          Works like Tradelle: DeoDap&apos;s own Shopify app brings products into Shopify and
+          picks up their orders, and Trademart manages the products and watches the orders
+          there. Trademart never calls DeoDap. Without the app, import a DeoDap CSV and place
+          orders yourself.
         </p>
         {status.error !== null && (
           <p className="muted" style={{ margin: 0 }}>

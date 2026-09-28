@@ -8,8 +8,15 @@ import { describe, it } from 'node:test';
 import {
   DEODAP_IMPORT_BATCH,
   MAX_UPLOAD_BYTES,
+  ORDER_FLOWS,
   chunk,
+  dispatchLabel,
+  dispatchTone,
   formatChange,
+  orderFlowLabel,
+  routeLabel,
+  routeTone,
+  safeExternalUrl,
   jsonByteLength,
   orderStatusLabel,
   orderStatusTone,
@@ -85,6 +92,19 @@ describe('shopifyAdminUrl', () => {
   });
 });
 
+describe('safeExternalUrl', () => {
+  it('lets ordinary tracking links through', () => {
+    assert.equal(safeExternalUrl('https://track.example.com/DL123'), 'https://track.example.com/DL123');
+    assert.equal(safeExternalUrl(' http://track.example.com/1 '), 'http://track.example.com/1');
+  });
+
+  it('refuses anything that could run script or is not a link', () => {
+    for (const url of ['javascript:alert(1)', 'data:text/html,x', '//evil.example', 'track 123', '', null, undefined]) {
+      assert.equal(safeExternalUrl(url), null, String(url));
+    }
+  });
+});
+
 describe('orderSummaryText', () => {
   it('lists what to order from DeoDap', () => {
     const text = orderSummaryText({
@@ -98,6 +118,8 @@ describe('orderSummaryText', () => {
           sku: 'DD-100',
           quantity: 2,
           supplierRef: 'DD-100',
+          importedByTrademart: true,
+          route: 'MANUAL',
           evidence: [],
           unitCost: null,
           unitShippingCost: null,
@@ -111,6 +133,8 @@ describe('orderSummaryText', () => {
           sku: null,
           quantity: 1,
           supplierRef: 'jar-handle',
+          importedByTrademart: true,
+          route: 'MANUAL',
           evidence: [],
           unitCost: null,
           unitShippingCost: null,
@@ -119,6 +143,45 @@ describe('orderSummaryText', () => {
       ],
     });
     assert.equal(text, 'Shopify order #1001\nDD-100 x 2 - Mini Fan\njar-handle x 1 - Jar');
+  });
+});
+
+describe('order flow and route labels', () => {
+  it('describes both order flows, naming the Tradelle model', () => {
+    assert.deepEqual(ORDER_FLOWS, ['SHOPIFY_APP', 'MANUAL']);
+    assert.match(orderFlowLabel('SHOPIFY_APP'), /Shopify app/);
+    assert.match(orderFlowLabel('MANUAL'), /myself/);
+  });
+
+  it('labels routes, with MIXED needing attention', () => {
+    assert.equal(routeLabel('DEODAP_APP'), "Via DeoDap's app");
+    assert.equal(routeTone('MIXED'), 'warning');
+  });
+
+  it('never calls an app-handled order "Not placed"', () => {
+    assert.equal(dispatchLabel({ forwarding: null, route: 'DEODAP_APP' }), "With DeoDap's app");
+    assert.equal(dispatchTone({ forwarding: null, route: 'DEODAP_APP' }), 'info');
+    assert.equal(dispatchLabel({ forwarding: null, route: 'MANUAL' }), 'Not placed');
+    assert.equal(dispatchLabel({ forwarding: null, route: 'MIXED' }), 'Not placed');
+  });
+
+  it('lets a recorded status win', () => {
+    const forwarding = {
+      status: 'PROBLEM' as const,
+      supplierOrderId: null,
+      trackingCompany: null,
+      trackingNumber: null,
+      trackingUrl: null,
+      note: null,
+      placedVia: 'MANUAL' as const,
+      placedAt: null,
+      shippedAt: null,
+      deliveredAt: null,
+      updatedAt: null,
+      updatedBy: null,
+    };
+    assert.equal(dispatchLabel({ forwarding, route: 'DEODAP_APP' }), 'Problem');
+    assert.equal(dispatchTone({ forwarding, route: 'DEODAP_APP' }), 'danger');
   });
 });
 

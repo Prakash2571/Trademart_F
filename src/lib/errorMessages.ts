@@ -135,7 +135,7 @@ const PRESENTATION: Record<string, ErrorPresentation> = {
   RESEARCH_SUPPLIER_UNVERIFIED: {
     title: 'Supplier availability not verified',
     action:
-      'Nothing was created. Verify this product is currently available from the supplier (record a Tradelle verification) before pushing.',
+      'Nothing was created. Verify this product is currently available from the supplier (record a Tradelle or DeoDap verification) before pushing.',
     tone: 'warning',
     offerRetry: false,
     offerRefresh: true,

@@ -50,6 +50,7 @@ import type {
   DeodapPriceRounding,
   DeodapPricingMode,
   DeodapPricingRule,
+  DeodapStatus,
 } from '@/lib/types';
 
 type Filter = 'ALL' | DeodapPreviewStatus;
@@ -93,6 +94,10 @@ export default function DeodapImportPage() {
   const [results, setResults] = useState<DeodapImportItemResult[] | null>(null);
   const [importError, setImportError] = useState<ApiError | null>(null);
   const history = useApi<DeodapImportRecord[]>('/suppliers/deodap/imports?limit=50');
+  // For the order flow: with DeoDap's app placing orders, products created here are the
+  // exception, and the operator should know that before choosing a file.
+  const status = useApi<DeodapStatus>('/suppliers/deodap/status');
+  const appFlow = (preview?.orderFlow ?? status.data?.settings.orderFlow) === 'SHOPIFY_APP';
 
   /**
    * Re-reads the file with the current mapping and pricing. `keep` narrows the new
@@ -235,6 +240,19 @@ export default function DeodapImportPage() {
       <DeodapNav />
 
       <div className="stack">
+        {/* Before a file is read. Afterwards the backend says the same thing first in its
+            own warnings, so showing both would repeat it. */}
+        {appFlow && preview === null && (
+          <Callout tone="warning" title="You are set up to use DeoDap's Shopify app">
+            DeoDap&apos;s app only sends orders to DeoDap for products it imported itself.
+            Products created here are <strong>not</strong> known to the app, so you would place
+            their orders with DeoDap yourself on the{' '}
+            <Link href="/suppliers/deodap/orders">DeoDap orders</Link> page. To have orders sent
+            automatically, import the product through DeoDap&apos;s app instead. The order flow is
+            set on the <Link href="/suppliers/deodap">DeoDap page</Link>.
+          </Callout>
+        )}
+
         <Card title="1. Choose a DeoDap product file">
           <div className="stack" style={{ gap: 12 }}>
             <CsvFilePicker
@@ -539,7 +557,11 @@ export default function DeodapImportPage() {
             { label: 'Tag', to: 'DeoDap' },
             { label: 'Supplier cost', to: `DeoDap cost recorded (${preview.currencyCode})` },
           ]}
-          consequence="They are created as DRAFTS, so customers cannot see them until you publish them from the review queue. A product already in Shopify with the same SKU is skipped, not duplicated."
+          consequence={`They are created as DRAFTS, so customers cannot see them until you publish them from the review queue. A product already in Shopify with the same SKU is skipped, not duplicated.${
+            appFlow
+              ? " DeoDap's Shopify app will not send their orders to DeoDap - you place those yourself."
+              : ''
+          }`}
           confirmLabel="Import as drafts"
           tone="info"
           onConfirm={() => void runImport()}

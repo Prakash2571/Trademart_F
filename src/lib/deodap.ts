@@ -8,6 +8,8 @@
 
 import type {
   DeodapImportOutcome,
+  DeodapOrderFlow,
+  DeodapOrderRoute,
   DeodapOrderStatus,
   DeodapOrderView,
   DeodapPreviewStatus,
@@ -84,6 +86,26 @@ export function shopifyAdminUrl(storeDomain: string | null | undefined, gid: str
   return `https://admin.shopify.com/store/${store}/${section}/${match[2]}`;
 }
 
+/**
+ * A tracking link that is safe to put in an href, or null.
+ *
+ * Tracking URLs are written into Shopify by whichever app fulfilled the order - here,
+ * DeoDap's - so they are third-party data. Only http(s) is let through: a javascript:
+ * or data: URL in a link is script.
+ */
+export function safeExternalUrl(url: string | null | undefined): string | null {
+  const value = (url ?? '').trim();
+  if (!/^https?:\/\//i.test(value)) return null;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.length > 0
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What to order from DeoDap for one Shopify order, as text to paste. */
 export function orderSummaryText(order: Pick<DeodapOrderView, 'name' | 'lines'>): string {
   const lines = order.lines.map((line) => {
@@ -94,6 +116,47 @@ export function orderSummaryText(order: Pick<DeodapOrderView, 'name' | 'lines'>)
 }
 
 /* ------------------------------------------------------------- labels ---- */
+
+export const ORDER_FLOWS: readonly DeodapOrderFlow[] = ['SHOPIFY_APP', 'MANUAL'];
+
+/** The order-flow setting, as the operator chooses it. */
+export function orderFlowLabel(flow: DeodapOrderFlow): string {
+  return flow === 'SHOPIFY_APP'
+    ? "DeoDap's Shopify app sends them (like Tradelle)"
+    : 'I place them with DeoDap myself';
+}
+
+/** Who sends an order, or part of one, to DeoDap. */
+export function routeLabel(route: DeodapOrderRoute): string {
+  switch (route) {
+    case 'DEODAP_APP':
+      return "Via DeoDap's app";
+    case 'MIXED':
+      return 'App + by hand';
+    case 'MANUAL':
+    default:
+      return 'By hand';
+  }
+}
+
+export function routeTone(route: DeodapOrderRoute): Tone {
+  return route === 'DEODAP_APP' ? 'info' : route === 'MIXED' ? 'warning' : 'neutral';
+}
+
+/**
+ * What the DeoDap column says for an order. A recorded status always wins. Without
+ * one, an order DeoDap's app handles is "with DeoDap's app" - not "Not placed", which
+ * would be wrong and alarming.
+ */
+export function dispatchLabel(order: Pick<DeodapOrderView, 'forwarding' | 'route'>): string {
+  if (order.forwarding !== null) return orderStatusLabel(order.forwarding.status);
+  return order.route === 'DEODAP_APP' ? "With DeoDap's app" : 'Not placed';
+}
+
+export function dispatchTone(order: Pick<DeodapOrderView, 'forwarding' | 'route'>): Tone {
+  if (order.forwarding !== null) return orderStatusTone(order.forwarding.status);
+  return order.route === 'DEODAP_APP' ? 'info' : 'warning';
+}
 
 export const ORDER_STATUSES: readonly DeodapOrderStatus[] = [
   'NOT_PLACED',

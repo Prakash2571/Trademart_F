@@ -45,7 +45,13 @@ import {
 } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiGet, apiPost, newIdempotencyKey } from '@/lib/api';
-import { formatAmount, formatDate, formatDateTime, parseNumericInput } from '@/lib/format';
+import {
+  formatAmount,
+  formatDate,
+  formatDateTime,
+  parseNumericInput,
+  supplierName,
+} from '@/lib/format';
 import type {
   AllowedActions,
   AnalyzeResult,
@@ -515,13 +521,14 @@ export default function CandidatePage() {
                 onClick={() => setSupplierOpen(true)}
                 disabled={busy !== null}
               >
-                {data.supplier === null ? 'Record Tradelle verification' : 'Update supplier verification'}
+                {data.supplier === null ? 'Record supplier verification' : 'Update supplier verification'}
               </button>
             }
           >
             {sourceability === null || data.supplier === null ? (
               <Callout tone="warning" title="Supplier availability UNKNOWN">
-                This candidate has not been verified as sourceable from Tradelle. A product is
+                This candidate has not been verified as sourceable from its supplier (Tradelle or
+                DeoDap). A product is
                 not sellable on market signals alone — record whether it is currently available
                 from the supplier. A push is blocked until it is verified.
               </Callout>
@@ -533,7 +540,7 @@ export default function CandidatePage() {
                 </div>
                 <KeyValue
                   items={[
-                    { key: 'Provider', value: sourceability.provider },
+                    { key: 'Provider', value: supplierName(sourceability.provider) },
                     {
                       key: 'Availability',
                       value: AVAILABILITY_LABEL[sourceability.availability],
@@ -1043,7 +1050,7 @@ export default function CandidatePage() {
                 : decisionSource?.current === 'NEEDS_RECHECK'
                   ? 'The supplier check is stale. Re-verify availability before pushing.'
                   : 'Supplier availability has not been verified. Record a supplier verification before pushing.'}{' '}
-              Close this dialog and use “Record Tradelle verification”.
+              Close this dialog and use “Record supplier verification”.
             </Callout>
           )}
 
@@ -1212,6 +1219,7 @@ export default function CandidatePage() {
         <SupplierVerificationModal
           id={id}
           existing={data.supplier}
+          source={data.source}
           onClose={() => setSupplierOpen(false)}
           onSaved={() => {
             setSupplierOpen(false);
@@ -1227,8 +1235,46 @@ export default function CandidatePage() {
  * Supplier verification form
  * ======================================================================== */
 
+type VerifiedSupplier = 'TRADELLE' | 'DEODAP' | 'OTHER';
+
+/** Per-supplier wording for the verification form, so DeoDap reads as DeoDap throughout. */
+const SUPPLIER_FORM_TEXT: Record<
+  VerifiedSupplier,
+  {
+    /** Field-label prefix: "Tradelle product ID", "Supplier URL". */
+    name: string;
+    /** Where the check was made, completing "Record what you verified ...". */
+    where: string;
+    idPlaceholder: string;
+    urlPlaceholder: string;
+    currency: string;
+  }
+> = {
+  TRADELLE: {
+    name: 'Tradelle',
+    where: 'in Tradelle',
+    idPlaceholder: 'TRD-12345',
+    urlPlaceholder: 'https://tradelle.io/...',
+    currency: 'USD',
+  },
+  DEODAP: {
+    name: 'DeoDap',
+    where: 'in DeoDap',
+    idPlaceholder: 'DeoDap product code or SKU',
+    urlPlaceholder: 'https://deodap.in/...',
+    currency: 'INR',
+  },
+  OTHER: {
+    name: 'Supplier',
+    where: 'with the supplier',
+    idPlaceholder: 'Supplier product id',
+    urlPlaceholder: 'https://...',
+    currency: 'USD',
+  },
+};
+
 interface SupplierFormState {
-  provider: 'TRADELLE' | 'OTHER';
+  provider: VerifiedSupplier;
   availability: SupplierAvailability;
   supplierProductId: string;
   sourceUrl: string;
@@ -1241,9 +1287,20 @@ interface SupplierFormState {
   note: string;
 }
 
-function initialSupplierForm(existing: ProductCandidate['supplier']): SupplierFormState {
+function initialSupplierForm(
+  existing: ProductCandidate['supplier'],
+  source: ProductCandidate['source'],
+): SupplierFormState {
+  // An existing verification keeps its supplier. A first one defaults to where the
+  // candidate was researched, and to Tradelle as before when that says nothing.
+  const provider: VerifiedSupplier =
+    existing?.provider === 'OTHER' || existing?.provider === 'DEODAP' || existing?.provider === 'TRADELLE'
+      ? existing.provider
+      : source === 'DEODAP'
+        ? 'DEODAP'
+        : 'TRADELLE';
   return {
-    provider: existing?.provider === 'OTHER' ? 'OTHER' : 'TRADELLE',
+    provider,
     availability: existing?.availability ?? 'AVAILABLE',
     supplierProductId: existing?.supplierProductId ?? '',
     sourceUrl: existing?.sourceUrl ?? '',
@@ -1268,15 +1325,18 @@ function initialSupplierForm(existing: ProductCandidate['supplier']): SupplierFo
 function SupplierVerificationModal({
   id,
   existing,
+  source,
   onClose,
   onSaved,
 }: {
   id: string;
   existing: ProductCandidate['supplier'];
+  source: ProductCandidate['source'];
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<SupplierFormState>(() => initialSupplierForm(existing));
+  const [form, setForm] = useState<SupplierFormState>(() => initialSupplierForm(existing, source));
+  const text = SUPPLIER_FORM_TEXT[form.provider];
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
@@ -1343,9 +1403,9 @@ function SupplierVerificationModal({
   };
 
   return (
-    <Modal title="Record Tradelle availability" onClose={onClose}>
+    <Modal title="Record supplier availability" onClose={onClose}>
       <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
-        Record what you verified in Tradelle. This is your observation — the link is stored
+        Record what you verified {text.where}. This is your observation — the link is stored
         for navigation and is never fetched. Availability ages from now, so re-verify if it
         goes stale before a push.
       </p>
@@ -1363,6 +1423,21 @@ function SupplierVerificationModal({
 
       <div className="stack" style={{ gap: 10 }}>
         <label className="stack" style={{ gap: 3 }}>
+          <span style={{ fontSize: 12 }}>Supplier</span>
+          <select
+            className="select"
+            value={form.provider}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+              set('provider', event.target.value as VerifiedSupplier)
+            }
+          >
+            <option value="TRADELLE">Tradelle</option>
+            <option value="DEODAP">DeoDap</option>
+            <option value="OTHER">Another supplier</option>
+          </select>
+        </label>
+
+        <label className="stack" style={{ gap: 3 }}>
           <span style={{ fontSize: 12 }}>Availability</span>
           <select
             className="select"
@@ -1379,25 +1454,25 @@ function SupplierVerificationModal({
 
         <div className="row" style={{ gap: 12, flexWrap: 'wrap' }}>
           <label className="stack" style={{ gap: 3, flex: '1 1 180px' }}>
-            <span style={{ fontSize: 12 }}>Tradelle product ID</span>
+            <span style={{ fontSize: 12 }}>{text.name} product ID</span>
             <input
               className="select"
               value={form.supplierProductId}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('supplierProductId', event.target.value)
               }
-              placeholder="TRD-12345"
+              placeholder={text.idPlaceholder}
             />
           </label>
           <label className="stack" style={{ gap: 3, flex: '1 1 240px' }}>
-            <span style={{ fontSize: 12 }}>Tradelle URL (evidence only)</span>
+            <span style={{ fontSize: 12 }}>{text.name} URL (evidence only)</span>
             <input
               className="select"
               value={form.sourceUrl}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('sourceUrl', event.target.value)
               }
-              placeholder="https://tradelle.io/..."
+              placeholder={text.urlPlaceholder}
             />
           </label>
         </div>
@@ -1420,7 +1495,7 @@ function SupplierVerificationModal({
               className="select"
               maxLength={3}
               value={form.productCurrency}
-              placeholder="USD"
+              placeholder={text.currency}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('productCurrency', event.target.value)
               }
@@ -1443,7 +1518,7 @@ function SupplierVerificationModal({
               className="select"
               maxLength={3}
               value={form.shippingCurrency}
-              placeholder="USD"
+              placeholder={text.currency}
               onChange={(event: ChangeEvent<HTMLInputElement>) =>
                 set('shippingCurrency', event.target.value)
               }
@@ -1468,7 +1543,7 @@ function SupplierVerificationModal({
             className="select"
             value={form.note}
             onChange={(event: ChangeEvent<HTMLInputElement>) => set('note', event.target.value)}
-            placeholder="Verified manually in Tradelle"
+            placeholder={`Verified manually ${text.where}`}
           />
         </label>
       </div>

@@ -20,7 +20,7 @@
  */
 
 import { Badge, type BadgeTone } from '@/components/ui';
-import { formatAmount, formatDateTime, formatNumber } from '@/lib/format';
+import { formatAmount, formatDateTime, formatNumber, supplierName } from '@/lib/format';
 import type {
   CapabilityAvailability,
   DataConfidence,
@@ -209,7 +209,7 @@ export function SupplierBadge({
 }) {
   return (
     <Badge tone={SOURCEABILITY_TONE[current]} title={SOURCEABILITY_HINT[current]}>
-      {provider && provider !== 'UNKNOWN' ? `${titleCase(provider)} ` : ''}
+      {provider && provider !== 'UNKNOWN' ? `${supplierName(provider)} ` : ''}
       {SOURCEABILITY_LABEL[current]}
     </Badge>
   );
@@ -227,10 +227,6 @@ export const AVAILABILITY_LABEL: Record<SupplierAvailability, string> = {
   UNAVAILABLE: 'Unavailable',
   UNKNOWN: 'Unknown',
 };
-
-function titleCase(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
-}
 
 export function SeasonBadge({ state }: { state: SeasonState }) {
   return (

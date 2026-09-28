@@ -6,7 +6,7 @@
  * Leads with what the module CANNOT measure, before any score is shown.
  *
  * That ordering is deliberate and is the most important decision on this page. Four of
- * the six market signals come only from figures an operator read on a Tradelle page and
+ * the six market signals come only from figures an operator read on a supplier page and
  * typed in; Google Ads keyword planning is not built and Google Trends has no public API.
  * A dashboard that opened with "87/100" would imply live market intelligence, and the
  * operator would trust a number they half-remember entering three weeks ago.
@@ -139,7 +139,8 @@ export default function ResearchPage() {
         {capabilities.data !== null && (
           <>
             <Callout tone="warning" title="Market data is entered by hand">
-              {capabilities.data.tradelle.modes.DIRECT_API_UNAVAILABLE} Demand, trend,
+              {capabilities.data.tradelle.modes.DIRECT_API_UNAVAILABLE}{' '}
+              {capabilities.data.deodap?.modes.DIRECT_API_UNAVAILABLE} Demand, trend,
               competition and seasonality therefore come from figures you record yourself,
               and are scored as estimates with you named as the source.
             </Callout>
@@ -397,6 +398,8 @@ function StatusBadge({ candidate }: { candidate: ProductCandidate }) {
 interface FormState {
   title: string;
   category: string;
+  /** Where the product was found: a supplier Trademart can identify, or elsewhere. */
+  source: 'TRADELLE' | 'DEODAP' | 'MANUAL';
   sourceProductId: string;
   sourceUrl: string;
   keywords: string;
@@ -437,6 +440,7 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   title: '',
   category: '',
+  source: 'MANUAL',
   sourceProductId: '',
   sourceUrl: '',
   keywords: '',
@@ -497,6 +501,12 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
    */
   const [shippingCurrencyTouched, setShippingCurrencyTouched] = useState(false);
   const [sellingCurrencyTouched, setSellingCurrencyTouched] = useState(false);
+  /*
+   * Where the product was found. Until the operator chooses, it follows the old rule - a
+   * supplier reference means Tradelle, none means "elsewhere" - so nobody who never
+   * opens the select gets a different result than before DeoDap existed.
+   */
+  const [sourceTouched, setSourceTouched] = useState(false);
 
   useEffect(() => {
     if (!sellingCurrencyTouched && form.sellingCurrency === '' && storeCurrency !== null) {
@@ -589,7 +599,7 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
     try {
       await apiPost('/intelligence/candidates', {
         title: form.title.trim(),
-        source: form.sourceProductId.trim() === '' ? 'MANUAL' : 'TRADELLE',
+        source: form.source,
         sourceProductId: textOrNull(form.sourceProductId),
         sourceUrl: textOrNull(form.sourceUrl),
         category: textOrNull(form.category),
@@ -637,6 +647,7 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
       setForm(EMPTY_FORM);
       setShippingCurrencyTouched(false);
       setSellingCurrencyTouched(false);
+      setSourceTouched(false);
       onCreated();
     } catch (caught: unknown) {
       setError(
@@ -689,13 +700,39 @@ function CandidateForm({ onCreated }: { onCreated: () => void }) {
               placeholder="Home"
             />
           </Field>
-          <Field label="Supplier reference" hint="Tradelle product id, if you have one">
+          <Field label="Found on" hint="The supplier's site where you researched it">
+            <select
+              className="select"
+              value={form.source}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                setSourceTouched(true);
+                set('source', event.target.value as FormState['source']);
+              }}
+            >
+              <option value="TRADELLE">Tradelle</option>
+              <option value="DEODAP">DeoDap</option>
+              <option value="MANUAL">Somewhere else</option>
+            </select>
+          </Field>
+          <Field
+            label="Supplier reference"
+            hint={
+              form.source === 'DEODAP'
+                ? 'DeoDap product id or SKU, if you have one'
+                : form.source === 'MANUAL' && sourceTouched
+                  ? 'Its id on that site, if it has one'
+                  : 'Tradelle product id, if you have one'
+            }
+          >
             <input
               className="select"
               value={form.sourceProductId}
-              onChange={(event: ChangeEvent<HTMLInputElement>) =>
-                set('sourceProductId', event.target.value)
-              }
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                const value = event.target.value;
+                set('sourceProductId', value);
+                // The pre-DeoDap rule, until the operator picks a source themselves.
+                if (!sourceTouched) set('source', value.trim() === '' ? 'MANUAL' : 'TRADELLE');
+              }}
             />
           </Field>
           <Field label="Source URL">

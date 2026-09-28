@@ -1298,6 +1298,7 @@ export type SeasonState =
 export type CandidateSource =
   | 'MANUAL'
   | 'TRADELLE'
+  | 'DEODAP'
   | 'SHOPIFY_PERFORMANCE'
   | 'GOOGLE_ADS'
   | 'GOOGLE_TRENDS';
@@ -1372,7 +1373,7 @@ export interface ScoreHistoryEntry {
 
 export type SupplierAvailability = 'AVAILABLE' | 'UNAVAILABLE' | 'UNKNOWN';
 export type SupplierAvailabilitySource = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API';
-export type SupplierProvider = 'TRADELLE' | 'OTHER' | 'UNKNOWN';
+export type SupplierProvider = 'TRADELLE' | 'DEODAP' | 'OTHER' | 'UNKNOWN';
 export type VariantCoverage = 'FULL' | 'PARTIAL' | 'NONE' | 'UNKNOWN';
 
 /**
@@ -1593,7 +1594,15 @@ export interface CapabilityAvailability {
   limitations: string[];
 }
 
-export type TradelleProviderMode = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API_UNAVAILABLE';
+/** How a supplier with its own Shopify app (Tradelle, DeoDap) reaches Trademart. */
+export type SupplierBridgeMode = 'SHOPIFY_BRIDGE' | 'MANUAL' | 'DIRECT_API_UNAVAILABLE';
+export type TradelleProviderMode = SupplierBridgeMode;
+
+export interface SupplierBridgeReport {
+  mode: SupplierBridgeMode;
+  modes: Record<SupplierBridgeMode, string>;
+  documentation: string;
+}
 
 export interface ResearchIntegrationDescriptor {
   key: string;
@@ -1606,11 +1615,9 @@ export interface ResearchIntegrationDescriptor {
 /** GET /api/intelligence/capabilities */
 export interface ResearchCapabilitiesReport {
   capabilities: CapabilityAvailability[];
-  tradelle: {
-    mode: TradelleProviderMode;
-    modes: Record<TradelleProviderMode, string>;
-    documentation: string;
-  };
+  tradelle: SupplierBridgeReport;
+  /** Optional so a console ahead of its backend still renders. */
+  deodap?: SupplierBridgeReport;
   unbuiltIntegrations: ResearchIntegrationDescriptor[];
 }
 
@@ -1761,10 +1768,19 @@ export interface PushAsDraftResult {
  * ======================================================================== */
 
 export type DeodapPricingMode = 'MARKUP' | 'RETAIL';
+
+/**
+ * How orders reach DeoDap. SHOPIFY_APP is the Tradelle model: DeoDap's own Shopify app
+ * picks the orders up. Products created by Trademart's CSV import are always manual.
+ */
+export type DeodapOrderFlow = 'SHOPIFY_APP' | 'MANUAL';
+export type DeodapLineRoute = 'DEODAP_APP' | 'MANUAL';
+export type DeodapOrderRoute = DeodapLineRoute | 'MIXED';
 export type DeodapPriceRounding = 'none' | 'charm99' | 'integer';
 export type DeodapCredentialKind = 'API_KEY' | 'ACCOUNT_LOGIN';
 
 export interface DeodapSettings {
+  orderFlow: DeodapOrderFlow;
   skuPrefixes: string[];
   currencyCode: string;
   vendorName: string;
@@ -1913,6 +1929,8 @@ export interface DeodapImportPreview {
   pricing: DeodapPricingRule;
   currencyCode: string;
   vendor: string;
+  /** SHOPIFY_APP: DeoDap's app will NOT send orders for products created here. */
+  orderFlow: DeodapOrderFlow;
   shopCurrency: string | null;
   /** When set, nothing may be imported: prices would be in the wrong currency. */
   currencyProblem: string | null;
@@ -2032,6 +2050,9 @@ export interface DeodapOrderLine {
   sku: string | null;
   quantity: number;
   supplierRef: string | null;
+  /** True when Trademart's CSV import created the product - unknown to DeoDap's app. */
+  importedByTrademart: boolean;
+  route: DeodapLineRoute;
   evidence: string[];
   unitCost: number | null;
   unitShippingCost: number | null;
@@ -2070,8 +2091,24 @@ export interface DeodapOrderView {
   } | null;
   lines: DeodapOrderLine[];
   otherLineCount: number;
+  /** Who sends the order to DeoDap: DeoDap's Shopify app, the operator, or some lines each. */
+  route: DeodapOrderRoute;
   supplierCost: { total: number | null; currencyCode: string | null; complete: boolean };
-  shopifyTracking: { company: string | null; number: string | null; url: string | null }[];
+  /** Progress as Shopify reports it - the same normalisation the dropshipping pages use. */
+  shipment: DropshipShipment;
   forwarding: DeodapForwardingRecord | null;
+  /** What needs a person, in the backend's words. Empty when nothing does. */
+  attention: string[];
   needsAction: boolean;
+}
+
+/** GET /api/suppliers/deodap/orders - meta. */
+export interface DeodapOrdersMeta {
+  scanned: number;
+  matched: number;
+  orderFlow: DeodapOrderFlow;
+  processingWarningHours: number;
+  hasNextPage: boolean;
+  endCursor: string | null;
+  degraded?: string[];
 }
