@@ -41,6 +41,11 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/pricing', label: 'Pricing', icon: '%' },
   { href: '/automation', label: 'Automation', icon: '⚡' },
   { href: '/suppliers', label: 'Suppliers', icon: '⛃' },
+  // DeoDap under Suppliers: the overview (account, settings, cost sync) and the two pages
+  // used day to day - bringing products in, and placing the orders they sell.
+  { href: '/suppliers/deodap', label: 'DeoDap', icon: '⇪' },
+  { href: '/suppliers/deodap/import', label: 'DeoDap import', icon: '⤓' },
+  { href: '/suppliers/deodap/orders', label: 'DeoDap orders', icon: '☷' },
   // "Storefront ops", not "Storefront": this is the operational view of the sales
   // channels, not the public store. The customer-facing headless storefront is a
   // separate application and is deliberately not reachable from the admin nav.

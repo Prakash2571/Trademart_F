@@ -118,6 +118,11 @@ never sent to the browser.
 | `/analytics` | Revenue, AOV, status breakdowns, revenue-by-day, top products, plus explicit unavailability for margin and traffic |
 | `/pricing` | Margin calculator and suggested-price calculator |
 | `/automation` | Automation control center: status, rule editor, preview, apply, run history |
+| `/suppliers` | Registered supplier providers, their real capabilities, and a way into DeoDap |
+| `/suppliers/deodap` | DeoDap overview: encrypted account (optional), SKU prefixes, currency and import pricing defaults |
+| `/suppliers/deodap/import` | Import a DeoDap CSV: column mapping, price preview, create Shopify **drafts** with the DeoDap cost recorded |
+| `/suppliers/deodap/sync` | Upload a newer DeoDap price list and update recorded costs (Shopify prices are not changed) |
+| `/suppliers/deodap/orders` | Orders with DeoDap products: what to order, record DeoDap's order number, status and tracking |
 | `/settings` | Shopify connection, store domain, API version, backend health |
 | `/login` | Operator sign-in |
 

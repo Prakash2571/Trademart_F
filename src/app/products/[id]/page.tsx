@@ -23,7 +23,16 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 
-import { Badge, Callout, Card, ErrorCallout, ErrorState, Modal, PageHeader } from '@/components/ui';
+import {
+  Badge,
+  Callout,
+  Card,
+  ErrorCallout,
+  ErrorState,
+  Modal,
+  PageHeader,
+  supplierTone,
+} from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
@@ -374,9 +383,7 @@ function SummaryCard({ product }: { product: ProductDto }) {
           <div className="kv__value">{formatNumber(product.totalInventory)}</div>
           <div className="kv__key">Detected supplier</div>
           <div className="kv__value">
-            <Badge tone={product.supplier === 'TRADELLE' ? 'info' : 'neutral'}>
-              {product.supplier}
-            </Badge>
+            <Badge tone={supplierTone(product.supplier)}>{product.supplier}</Badge>
             {product.supplierEvidence.length > 0 && (
               <span className="muted"> ({product.supplierEvidence.join(', ')})</span>
             )}

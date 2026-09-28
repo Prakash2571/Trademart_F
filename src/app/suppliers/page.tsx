@@ -10,12 +10,16 @@
  * tick for a capability that always returns nothing.
  *
  * There are deliberately NO action controls here. Trademart has no supplier API
- * to call, and a button that cannot work is worse than no button.
+ * to call, and a button that cannot work is worse than no button. The one link is
+ * to the DeoDap pages, whose flows work from files and records instead of an API.
  */
 
-import { Badge, Callout, Card, ErrorState, PageHeader } from '@/components/ui';
+import Link from 'next/link';
+
+import { Badge, Callout, Card, ErrorState, KeyValue, PageHeader } from '@/components/ui';
 import { useApi } from '@/hooks/useApi';
-import type { SupplierCapabilityFlags, SupplierProviderDto } from '@/lib/types';
+import { formatDateTime, formatNumber } from '@/lib/format';
+import type { DeodapStatus, SupplierCapabilityFlags, SupplierProviderDto } from '@/lib/types';
 
 /**
  * Capabilities in reading order, with labels.
@@ -75,10 +79,13 @@ function SuppliersConsole() {
       <Callout tone="info" title="How supplier costs actually reach Trademart">
         No registered provider exposes a documented public cost API. Costs come from
         Shopify&apos;s <span className="mono">cost per item</span>, which dropshipping apps write
-        when they import a product, or from a manual cost entered in Trademart. When neither
-        exists the cost is <span className="mono">UNKNOWN</span> and the product is skipped for
-        automatic pricing — it is never priced as if the cost were zero.
+        when they import a product, or from a manual cost recorded in Trademart - typed in,
+        or taken from a DeoDap product file or price list. When neither exists the cost is{' '}
+        <span className="mono">UNKNOWN</span> and the product is skipped for automatic pricing —
+        it is never priced as if the cost were zero.
       </Callout>
+
+      <DeodapCard />
 
       {list.map((provider) => (
         <ProviderCard key={provider.providerName} provider={provider} />
@@ -132,6 +139,58 @@ function ProviderCard({ provider }: { provider: SupplierProviderDto }) {
           return <span className="mono">null</span> is reported as unsupported rather than
           available.
         </p>
+      </div>
+    </Card>
+  );
+}
+
+
+/** DeoDap works from files and records, so it gets a way in here as well as its capabilities. */
+function DeodapCard() {
+  const status = useApi<DeodapStatus>('/suppliers/deodap/status');
+  const data = status.data;
+
+  return (
+    <Card
+      title="DeoDap"
+      actions={
+        <Link href="/suppliers/deodap" className="btn btn--primary btn--sm">
+          Open DeoDap
+        </Link>
+      }
+    >
+      <div className="stack" style={{ gap: 10 }}>
+        <p style={{ margin: 0 }}>
+          Import DeoDap products from a CSV as Shopify drafts with their DeoDap cost, keep costs
+          current from newer price lists, and record the orders you place with DeoDap. Nothing
+          is sent to DeoDap automatically.
+        </p>
+        {status.error !== null && (
+          <p className="muted" style={{ margin: 0 }}>
+            DeoDap status unavailable ({status.error.code}).
+          </p>
+        )}
+        {data !== null && (
+          <KeyValue
+            items={[
+              {
+                key: 'Account',
+                value: data.credentials.stored
+                  ? `saved ${data.credentials.maskedIdentifier ?? ''}`.trim()
+                  : 'not saved',
+              },
+              {
+                key: 'Imported products',
+                value: data.counts === null ? '—' : formatNumber(data.counts.importedProducts),
+              },
+              {
+                key: 'Recorded orders',
+                value: data.counts === null ? '—' : formatNumber(data.counts.recordedOrders),
+              },
+              { key: 'Settings saved', value: formatDateTime(data.settingsUpdatedAt) },
+            ]}
+          />
+        )}
       </div>
     </Card>
   );

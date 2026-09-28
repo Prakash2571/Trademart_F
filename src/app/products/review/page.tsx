@@ -15,7 +15,16 @@
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
-import { Badge, Callout, Card, EmptyState, ErrorCallout, ErrorState, PageHeader } from '@/components/ui';
+import {
+  Badge,
+  Callout,
+  Card,
+  EmptyState,
+  ErrorCallout,
+  ErrorState,
+  PageHeader,
+  supplierTone,
+} from '@/components/ui';
 import { CostSourceBadge, ManualCostEditor } from '@/components/ManualCostEditor';
 import { useApi } from '@/hooks/useApi';
 import { ApiError, apiPatch, apiPost, newIdempotencyKey } from '@/lib/api';
@@ -340,9 +349,7 @@ function ReviewItem({
             <div className="kv__value">{product.vendor ?? '—'}</div>
             <div className="kv__key">Detected supplier</div>
             <div className="kv__value">
-              <Badge tone={product.supplier === 'TRADELLE' ? 'info' : 'neutral'}>
-                {product.supplier}
-              </Badge>
+              <Badge tone={supplierTone(product.supplier)}>{product.supplier}</Badge>
             </div>
             <div className="kv__key">Supplier evidence</div>
             <div className="kv__value muted">

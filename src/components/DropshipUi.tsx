@@ -200,6 +200,18 @@ export function SupplierBadge({
       </Badge>
     );
   }
+  if (supplier === 'DEODAP') {
+    return (
+      <Badge
+        tone="success"
+        title={
+          evidence.length > 0 ? `Identified from: ${evidence.join(', ')}` : 'Identified as DeoDap'
+        }
+      >
+        DeoDap
+      </Badge>
+    );
+  }
   if (supplier === 'UNKNOWN') {
     return (
       <Badge
